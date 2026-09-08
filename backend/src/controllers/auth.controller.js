@@ -1,17 +1,27 @@
-const jwt = require('jsonwebtoken');
+const crypto = require('node:crypto');
 const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 const { pool } = require('../config/database');
-const asyncHandler = require('../utils/asyncHandler');
-const ApiError = require('../utils/ApiError');
-const { sendSuccess } = require('../utils/ApiResponse');
 
-// Contas de usuário são criadas pelo admin via user.controller.js —
-// este controller cuida apenas de sessão (login/refresh/logout) e
-// self-service do próprio usuário logado (me/changePassword).
+/* =====================================================================
+ * auth.controller.js
+ * ---------------------------------------------------------------------
+ * Login, refresh de token, logout e troca de senha.
+ * ===================================================================== */
 
-const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || '15m';
-const REFRESH_TOKEN_TTL_DAYS = Number(process.env.REFRESH_TOKEN_TTL_DAYS || 30);
+class ApiError extends Error {
+  constructor(statusCode, message) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
+const ACCESS_TOKEN_TTL = '15m';
+const REFRESH_TOKEN_TTL_DAYS = 30;
+
+function hashRefreshToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
 
 function signAccessToken(user) {
   return jwt.sign(
@@ -21,127 +31,154 @@ function signAccessToken(user) {
   );
 }
 
-function hashToken(rawToken) {
-  return crypto.createHash('sha256').update(rawToken).digest('hex');
-}
-
 async function issueRefreshToken(userId) {
   const rawToken = crypto.randomBytes(48).toString('hex');
-  const tokenHash = hashToken(rawToken);
+  const tokenHash = hashRefreshToken(rawToken);
   const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
-
   await pool.query(
-    'INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)',
+    `INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)`,
     [userId, tokenHash, expiresAt]
   );
-
   return rawToken;
 }
 
-// POST /api/auth/login
-exports.login = asyncHandler(async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    throw new ApiError(400, 'Informe email e senha.');
-  }
-
-  const [rows] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
-  const user = rows[0];
-
-  // Mesma mensagem para "não existe" e "senha errada" — evita enumeração de e-mails.
-  if (!user || !user.is_active) {
-    throw new ApiError(401, 'Credenciais inválidas.');
-  }
-
-  const passwordMatches = await bcrypt.compare(password, user.password_hash);
-  if (!passwordMatches) {
-    throw new ApiError(401, 'Credenciais inválidas.');
-  }
-
-  const accessToken = signAccessToken(user);
-  const refreshToken = await issueRefreshToken(user.id);
-
-  await pool.query('UPDATE users SET last_login_at = NOW() WHERE id = ?', [user.id]);
-
-  const { password_hash, ...safeUser } = user;
-  sendSuccess(res, { user: safeUser, accessToken, refreshToken });
-});
-
-// POST /api/auth/refresh
-exports.refresh = asyncHandler(async (req, res) => {
-  const { refreshToken } = req.body;
-  if (!refreshToken) throw new ApiError(400, 'refreshToken é obrigatório.');
-
-  const tokenHash = hashToken(refreshToken);
-  const [rows] = await pool.query(
-    `SELECT rt.id, rt.expires_at, rt.revoked_at, u.id AS user_id, u.role, u.name, u.is_active
-     FROM refresh_tokens rt
-     JOIN users u ON u.id = rt.user_id
-     WHERE rt.token_hash = ?`,
-    [tokenHash]
-  );
-  const stored = rows[0];
-
-  const isValid = stored && !stored.revoked_at && new Date(stored.expires_at) > new Date() && stored.is_active;
-  if (!isValid) {
-    throw new ApiError(401, 'Refresh token inválido ou expirado.');
-  }
-
-  // Rotação: revoga o token usado e emite um par novo.
-  await pool.query('UPDATE refresh_tokens SET revoked_at = NOW() WHERE id = ?', [stored.id]);
-  const newRefreshToken = await issueRefreshToken(stored.user_id);
-  const accessToken = signAccessToken({ id: stored.user_id, role: stored.role, name: stored.name });
-
-  sendSuccess(res, { accessToken, refreshToken: newRefreshToken });
-});
-
-// POST /api/auth/logout
-exports.logout = asyncHandler(async (req, res) => {
-  const { refreshToken } = req.body;
-  if (refreshToken) {
-    const tokenHash = hashToken(refreshToken);
+async function logAction(req, { action, entityType = null, entityId = null, jobId = null, details = null }) {
+  try {
     await pool.query(
-      'UPDATE refresh_tokens SET revoked_at = NOW() WHERE token_hash = ? AND revoked_at IS NULL',
+      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, job_id, details, ip_address)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        req.user?.id ?? null,
+        action,
+        entityType,
+        entityId,
+        jobId,
+        details ? JSON.stringify(details) : null,
+        req.ip ?? null,
+      ]
+    );
+  } catch (err) {
+    console.error('Falha ao registrar log de auditoria:', err);
+  }
+}
+
+function toPublicUser(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    role: row.role,
+    job_title: row.job_title,
+    has_signature: !!row.has_signature,
+    is_active: !!row.is_active,
+  };
+}
+
+async function login(req, res, next) {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) throw new ApiError(400, 'E-mail e senha são obrigatórios.');
+
+    const [rows] = await pool.query(`SELECT * FROM users WHERE email = ? LIMIT 1`, [email]);
+    const user = rows[0];
+    if (!user || !user.is_active) throw new ApiError(401, 'Credenciais inválidas.');
+
+    const passwordOk = await bcrypt.compare(password, user.password_hash);
+    if (!passwordOk) throw new ApiError(401, 'Credenciais inválidas.');
+
+    const accessToken = signAccessToken(user);
+    const refreshToken = await issueRefreshToken(user.id);
+
+    await pool.query(`UPDATE users SET last_login_at = NOW() WHERE id = ?`, [user.id]);
+
+    // req.user ainda não existe neste ponto (rota pública), então montamos manualmente pro log.
+    req.user = { id: user.id };
+    await logAction(req, { action: 'LOGIN', entityType: 'user', entityId: user.id });
+
+    res.json({ data: { user: toPublicUser(user), accessToken, refreshToken } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function refresh(req, res, next) {
+  try {
+    const { refreshToken } = req.body;
+    if (!refreshToken) throw new ApiError(400, 'refreshToken é obrigatório.');
+
+    const tokenHash = hashRefreshToken(refreshToken);
+    const [rows] = await pool.query(
+      `SELECT rt.*, u.role, u.name, u.is_active
+       FROM refresh_tokens rt JOIN users u ON u.id = rt.user_id
+       WHERE rt.token_hash = ? AND rt.revoked_at IS NULL AND rt.expires_at > NOW()
+       LIMIT 1`,
       [tokenHash]
     );
+    const record = rows[0];
+    if (!record || !record.is_active) throw new ApiError(401, 'Sessão expirada. Faça login novamente.');
+
+    // Rotação: revoga o token usado e emite um novo par.
+    await pool.query(`UPDATE refresh_tokens SET revoked_at = NOW() WHERE id = ?`, [record.id]);
+
+    const newAccessToken = signAccessToken({ id: record.user_id, role: record.role, name: record.name });
+    const newRefreshToken = await issueRefreshToken(record.user_id);
+
+    res.json({ data: { accessToken: newAccessToken, refreshToken: newRefreshToken } });
+  } catch (err) {
+    next(err);
   }
-  sendSuccess(res, null, { message: 'Sessão encerrada.' });
-});
+}
 
-// GET /api/auth/me  (requer middleware authenticate; usa req.user.id)
-exports.me = asyncHandler(async (req, res) => {
-  const [rows] = await pool.query(
-    `SELECT id, name, email, role, job_title, has_signature, is_active, last_login_at
-     FROM users WHERE id = ?`,
-    [req.user.id]
-  );
-  if (!rows.length) throw new ApiError(404, 'Usuário não encontrado.');
-  sendSuccess(res, rows[0]);
-});
-
-// PATCH /api/auth/me/password
-exports.changePassword = asyncHandler(async (req, res) => {
-  const { currentPassword, newPassword } = req.body;
-  if (!currentPassword || !newPassword) {
-    throw new ApiError(400, 'Informe a senha atual e a nova senha.');
+async function logout(req, res, next) {
+  try {
+    const { refreshToken } = req.body;
+    if (refreshToken) {
+      const tokenHash = hashRefreshToken(refreshToken);
+      const [rows] = await pool.query(`SELECT user_id FROM refresh_tokens WHERE token_hash = ? LIMIT 1`, [tokenHash]);
+      await pool.query(`UPDATE refresh_tokens SET revoked_at = NOW() WHERE token_hash = ?`, [tokenHash]);
+      if (rows[0]) {
+        req.user = { id: rows[0].user_id };
+        await logAction(req, { action: 'LOGOUT', entityType: 'user', entityId: rows[0].user_id });
+      }
+    }
+    res.status(204).send();
+  } catch (err) {
+    next(err);
   }
-  if (newPassword.length < 8) {
-    throw new ApiError(400, 'A nova senha deve ter ao menos 8 caracteres.');
+}
+
+async function me(req, res, next) {
+  try {
+    const [rows] = await pool.query(`SELECT * FROM users WHERE id = ? LIMIT 1`, [req.user.id]);
+    const user = rows[0];
+    if (!user) throw new ApiError(404, 'Usuário não encontrado.');
+    res.json({ data: toPublicUser(user) });
+  } catch (err) {
+    next(err);
   }
+}
 
-  const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [req.user.id]);
-  const user = rows[0];
-  const matches = await bcrypt.compare(currentPassword, user.password_hash);
-  if (!matches) throw new ApiError(401, 'Senha atual incorreta.');
+async function changePassword(req, res, next) {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword || newPassword.length < 8) {
+      throw new ApiError(400, 'Senha atual e nova senha (mín. 8 caracteres) são obrigatórias.');
+    }
 
-  const newHash = await bcrypt.hash(newPassword, 12);
-  await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, req.user.id]);
+    const [rows] = await pool.query(`SELECT * FROM users WHERE id = ? LIMIT 1`, [req.user.id]);
+    const user = rows[0];
+    const passwordOk = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!passwordOk) throw new ApiError(401, 'Senha atual incorreta.');
 
-  // Por segurança, invalida todas as sessões ativas ao trocar a senha.
-  await pool.query(
-    'UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL',
-    [req.user.id]
-  );
+    const newHash = await bcrypt.hash(newPassword, 12);
+    await pool.query(`UPDATE users SET password_hash = ? WHERE id = ?`, [newHash, req.user.id]);
 
-  sendSuccess(res, null, { message: 'Senha alterada com sucesso. Faça login novamente.' });
-});
+    await logAction(req, { action: 'PASSWORD_CHANGED', entityType: 'user', entityId: req.user.id });
+
+    res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { login, refresh, logout, me, changePassword };

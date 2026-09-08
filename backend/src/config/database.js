@@ -1,7 +1,12 @@
 const mysql = require('mysql2/promise');
 
-// Pool de conexões compartilhado por toda a aplicação.
-// Todos os controllers importam { pool } daqui — nunca abrem conexão própria.
+/* =====================================================================
+ * config/database.js
+ * ---------------------------------------------------------------------
+ * Pool de conexões compartilhado por toda a aplicação. Todos os
+ * controllers importam { pool } daqui — nunca abrem conexão própria.
+ * ===================================================================== */
+
 const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
   port: Number(process.env.DB_PORT || 3306),
@@ -15,4 +20,17 @@ const pool = mysql.createPool({
   decimalNumbers: true,   // DECIMAL volta como number, não como string
 });
 
-module.exports = { pool };
+// Usado no boot do server.js (await testConnection()) para falhar rápido
+// se o banco não responder, em vez de deixar a aplicação subir "viva"
+// mas incapaz de atender qualquer rota que dependa do MySQL.
+async function testConnection() {
+  const connection = await pool.getConnection();
+  try {
+    await connection.query('SELECT 1');
+    console.log('Conexão com o MySQL OK.');
+  } finally {
+    connection.release();
+  }
+}
+
+module.exports = { pool, testConnection };

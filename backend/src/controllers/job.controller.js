@@ -1,191 +1,343 @@
 const { pool } = require('../config/database');
-const asyncHandler = require('../utils/asyncHandler');
-const ApiError = require('../utils/ApiError');
-const { sendSuccess, sendCreated } = require('../utils/ApiResponse');
-const { getPagination, buildMeta } = require('../utils/paginate');
-const mergeUpdate = require('../utils/mergeUpdate');
 
-const STATUSES = ['diagnostico', 'em_analise', 'revisao', 'parecer_emitido', 'concluido', 'cancelado'];
-const TAX_REGIMES = ['Lucro Real', 'Lucro Presumido', 'Simples Nacional', 'Lucro Arbitrado'];
+/* =====================================================================
+ * job.controller.js — clientes, jobs, equipe do job e diagnóstico (1:1).
+ * ===================================================================== */
+
+class ApiError extends Error {
+  constructor(statusCode, message) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
 const TEAM_ROLES = [
   'responsavel_tecnico', 'gerente_tributario', 'coordenador_tributario', 'analista_fiscal',
   'gerente_previdenciario', 'coordenador_previdenciario', 'analista_previdenciario',
 ];
 
-// GET /api/jobs
-exports.list = asyncHandler(async (req, res) => {
-  const { client_id, status, search } = req.query;
-  const { page, limit, offset } = getPagination(req.query);
+const DIAGNOSTIC_FIELDS = [
+  'pays_darf', 'avg_monthly_pis_cofins', 'avg_yearly_pis_cofins',
+  'avg_monthly_irpj_csll', 'avg_yearly_irpj_csll', 'avg_monthly_inss', 'avg_yearly_inss',
+  'avg_monthly_ipi', 'avg_yearly_ipi', 'collection_method', 'opportunities_above_500k',
+  'already_credits_risk_point', 'has_debts_with_rfb', 'usage_plan', 'estimated_usage_months',
+  'observations',
+];
 
-  const conditions = [];
-  const params = [];
-
-  if (client_id) { conditions.push('j.client_id = ?'); params.push(client_id); }
-  if (status) { conditions.push('j.status = ?'); params.push(status); }
-  if (search) { conditions.push('(j.job_number LIKE ? OR c.company_name LIKE ?)'); params.push(`%${search}%`, `%${search}%`); }
-
-  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-
-  const [rows] = await pool.query(
-    `SELECT j.*, c.company_name, c.cnpj
-     FROM jobs j
-     JOIN clients c ON c.id = j.client_id
-     ${where}
-     ORDER BY j.created_at DESC
-     LIMIT ? OFFSET ?`,
-    [...params, limit, offset]
-  );
-  const [[{ total }]] = await pool.query(
-    `SELECT COUNT(*) AS total FROM jobs j JOIN clients c ON c.id = j.client_id ${where}`,
-    params
-  );
-
-  sendSuccess(res, rows, { meta: buildMeta({ page, limit, total }) });
-});
-
-// GET /api/jobs/:id  (detalhe completo: cliente + equipe)
-exports.getById = asyncHandler(async (req, res) => {
-  const [rows] = await pool.query(
-    `SELECT j.*, c.company_name, c.cnpj, c.segment AS client_segment
-     FROM jobs j JOIN clients c ON c.id = j.client_id
-     WHERE j.id = ?`,
-    [req.params.id]
-  );
-  if (!rows.length) throw new ApiError(404, 'Job não encontrado.');
-
-  const [team] = await pool.query(
-    `SELECT jtm.id, jtm.role_in_job, u.id AS user_id, u.name, u.email
-     FROM job_team_members jtm JOIN users u ON u.id = jtm.user_id
-     WHERE jtm.job_id = ?`,
-    [req.params.id]
-  );
-
-  sendSuccess(res, { ...rows[0], team });
-});
-
-// POST /api/jobs
-exports.create = asyncHandler(async (req, res) => {
-  const {
-    job_number, client_id, period_start, period_end,
-    tax_regime = null, segment = null,
-  } = req.body;
-
-  if (!job_number || !client_id || !period_start || !period_end) {
-    throw new ApiError(400, 'job_number, client_id, period_start e period_end são obrigatórios.');
+async function logAction(req, { action, entityType = null, entityId = null, jobId = null, details = null }) {
+  try {
+    await pool.query(
+      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, job_id, details, ip_address)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [req.user?.id ?? null, action, entityType, entityId, jobId, details ? JSON.stringify(details) : null, req.ip ?? null]
+    );
+  } catch (err) {
+    console.error('Falha ao registrar log de auditoria:', err);
   }
-  if (tax_regime && !TAX_REGIMES.includes(tax_regime)) {
-    throw new ApiError(400, `tax_regime deve ser um de: ${TAX_REGIMES.join(', ')}.`);
+}
+
+function getPagination(query) {
+  const page = Math.max(1, Number(query.page) || 1);
+  const limit = Math.min(200, Math.max(1, Number(query.limit) || 20));
+  return { page, limit, offset: (page - 1) * limit };
+}
+
+// ─── Clientes ───────────────────────────────────────────────────────────────
+
+async function listClients(req, res, next) {
+  try {
+    const { search } = req.query;
+    const { page, limit, offset } = getPagination(req.query);
+    const where = search ? `WHERE company_name LIKE ? OR cnpj LIKE ?` : '';
+    const params = search ? [`%${search}%`, `%${search}%`] : [];
+
+    const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total FROM clients ${where}`, params);
+    const [rows] = await pool.query(
+      `SELECT * FROM clients ${where} ORDER BY company_name ASC LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
+    res.json({ data: rows, total, page, limit });
+  } catch (err) {
+    next(err);
   }
+}
 
-  const [client] = await pool.query('SELECT id FROM clients WHERE id = ?', [client_id]);
-  if (!client.length) throw new ApiError(404, 'Cliente informado não existe.');
+async function createClient(req, res, next) {
+  try {
+    const { cnpj, company_name, segment, tax_regime } = req.body;
+    if (!cnpj || !company_name) throw new ApiError(400, 'CNPJ e razão social são obrigatórios.');
+    const digitsOnly = String(cnpj).replace(/\D/g, '');
+    if (digitsOnly.length !== 14) throw new ApiError(400, 'CNPJ deve conter 14 dígitos.');
 
-  const [existing] = await pool.query('SELECT id FROM jobs WHERE job_number = ?', [job_number]);
-  if (existing.length) throw new ApiError(409, 'Já existe um Job com este número.');
+    let result;
+    try {
+      [result] = await pool.query(
+        `INSERT INTO clients (cnpj, company_name, segment, tax_regime) VALUES (?, ?, ?, ?)`,
+        [digitsOnly, company_name, segment || null, tax_regime || null]
+      );
+    } catch (err) {
+      if (err.code === 'ER_DUP_ENTRY') throw new ApiError(409, 'Já existe um cliente com esse CNPJ.');
+      throw err;
+    }
 
-  const [result] = await pool.query(
-    `INSERT INTO jobs (job_number, client_id, period_start, period_end, tax_regime, segment, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [job_number, client_id, period_start, period_end, tax_regime, segment, req.user?.id ?? null]
-  );
+    const [rows] = await pool.query(`SELECT * FROM clients WHERE id = ?`, [result.insertId]);
 
-  const [rows] = await pool.query('SELECT * FROM jobs WHERE id = ?', [result.insertId]);
-  sendCreated(res, rows[0]);
-});
+    await logAction(req, {
+      action: 'CLIENT_CREATED', entityType: 'client', entityId: result.insertId,
+      details: { company_name, cnpj: digitsOnly },
+    });
 
-// PUT /api/jobs/:id
-exports.update = asyncHandler(async (req, res) => {
-  const [rows] = await pool.query('SELECT * FROM jobs WHERE id = ?', [req.params.id]);
-  if (!rows.length) throw new ApiError(404, 'Job não encontrado.');
-
-  const data = mergeUpdate(rows[0], req.body, [
-    'period_start', 'period_end', 'tax_regime', 'segment',
-  ]);
-
-  await pool.query(
-    `UPDATE jobs SET period_start = ?, period_end = ?, tax_regime = ?, segment = ? WHERE id = ?`,
-    [data.period_start, data.period_end, data.tax_regime, data.segment, req.params.id]
-  );
-
-  const [updated] = await pool.query('SELECT * FROM jobs WHERE id = ?', [req.params.id]);
-  sendSuccess(res, updated[0]);
-});
-
-// PATCH /api/jobs/:id/status
-exports.updateStatus = asyncHandler(async (req, res) => {
-  const { status } = req.body;
-  if (!STATUSES.includes(status)) {
-    throw new ApiError(400, `status deve ser um de: ${STATUSES.join(', ')}.`);
+    res.status(201).json({ data: rows[0] });
+  } catch (err) {
+    next(err);
   }
+}
 
-  const [rows] = await pool.query('SELECT id FROM jobs WHERE id = ?', [req.params.id]);
-  if (!rows.length) throw new ApiError(404, 'Job não encontrado.');
+// ─── Jobs ───────────────────────────────────────────────────────────────────
 
-  await pool.query('UPDATE jobs SET status = ? WHERE id = ?', [status, req.params.id]);
-  const [updated] = await pool.query('SELECT * FROM jobs WHERE id = ?', [req.params.id]);
-  sendSuccess(res, updated[0]);
-});
+async function list(req, res, next) {
+  try {
+    const { search, status, client_id } = req.query;
+    const { page, limit, offset } = getPagination(req.query);
 
-// DELETE /api/jobs/:id
-exports.remove = asyncHandler(async (req, res) => {
-  const [rows] = await pool.query('SELECT id FROM jobs WHERE id = ?', [req.params.id]);
-  if (!rows.length) throw new ApiError(404, 'Job não encontrado.');
+    const where = [];
+    const params = [];
+    if (search) { where.push(`(j.job_number LIKE ? OR c.company_name LIKE ?)`); params.push(`%${search}%`, `%${search}%`); }
+    if (status) { where.push(`j.status = ?`); params.push(status); }
+    if (client_id) { where.push(`j.client_id = ?`); params.push(client_id); }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-  // ON DELETE CASCADE no schema cuida de team_members, diagnostics,
-  // analyses, usages, revenues, darf/sped/perdcomp e reports.
-  await pool.query('DELETE FROM jobs WHERE id = ?', [req.params.id]);
-  sendSuccess(res, null, { message: 'Job removido.' });
-});
+    const [[{ total }]] = await pool.query(
+      `SELECT COUNT(*) AS total FROM jobs j JOIN clients c ON c.id = j.client_id ${whereSql}`,
+      params
+    );
+    const [rows] = await pool.query(
+      `SELECT j.*, c.company_name, c.cnpj, c.segment AS client_segment
+       FROM jobs j JOIN clients c ON c.id = j.client_id
+       ${whereSql}
+       ORDER BY j.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
 
-// --- Equipe do Job (job_team_members) -----------------------------------
-
-// GET /api/jobs/:id/team
-exports.listTeam = asyncHandler(async (req, res) => {
-  const [rows] = await pool.query(
-    `SELECT jtm.id, jtm.role_in_job, u.id AS user_id, u.name, u.email, u.job_title
-     FROM job_team_members jtm JOIN users u ON u.id = jtm.user_id
-     WHERE jtm.job_id = ?`,
-    [req.params.id]
-  );
-  sendSuccess(res, rows);
-});
-
-// POST /api/jobs/:id/team
-exports.addTeamMember = asyncHandler(async (req, res) => {
-  const { user_id, role_in_job } = req.body;
-
-  if (!user_id || !TEAM_ROLES.includes(role_in_job)) {
-    throw new ApiError(400, `user_id é obrigatório e role_in_job deve ser um de: ${TEAM_ROLES.join(', ')}.`);
+    res.json({ data: rows, total, page, limit });
+  } catch (err) {
+    next(err);
   }
+}
 
-  const [job] = await pool.query('SELECT id FROM jobs WHERE id = ?', [req.params.id]);
-  if (!job.length) throw new ApiError(404, 'Job não encontrado.');
+async function get(req, res, next) {
+  try {
+    const { id } = req.params;
 
-  const [user] = await pool.query('SELECT id FROM users WHERE id = ? AND is_active = TRUE', [user_id]);
-  if (!user.length) throw new ApiError(404, 'Usuário informado não existe ou está inativo.');
+    const [jobRows] = await pool.query(
+      `SELECT j.*, c.company_name, c.cnpj, c.segment AS client_segment
+       FROM jobs j JOIN clients c ON c.id = j.client_id
+       WHERE j.id = ? LIMIT 1`,
+      [id]
+    );
+    const job = jobRows[0];
+    if (!job) throw new ApiError(404, 'Job não encontrado.');
 
-  const [existing] = await pool.query(
-    'SELECT id FROM job_team_members WHERE job_id = ? AND user_id = ? AND role_in_job = ?',
-    [req.params.id, user_id, role_in_job]
-  );
-  if (existing.length) throw new ApiError(409, 'Este usuário já ocupa esse papel neste Job.');
+    const [team] = await pool.query(
+      `SELECT jtm.id, jtm.role_in_job, u.id AS user_id, u.name
+       FROM job_team_members jtm JOIN users u ON u.id = jtm.user_id
+       WHERE jtm.job_id = ?
+       ORDER BY FIELD(jtm.role_in_job, ${TEAM_ROLES.map(() => '?').join(',')})`,
+      [id, ...TEAM_ROLES]
+    );
 
-  const [result] = await pool.query(
-    'INSERT INTO job_team_members (job_id, user_id, role_in_job) VALUES (?, ?, ?)',
-    [req.params.id, user_id, role_in_job]
-  );
+    res.json({ data: { ...job, team } });
+  } catch (err) {
+    next(err);
+  }
+}
 
-  sendCreated(res, { id: result.insertId, job_id: Number(req.params.id), user_id, role_in_job });
-});
+async function create(req, res, next) {
+  try {
+    const { job_number, client_id, period_start, period_end, tax_regime, segment } = req.body;
+    if (!job_number || !client_id || !period_start || !period_end) {
+      throw new ApiError(400, 'Número do job, cliente e período são obrigatórios.');
+    }
+    if (new Date(period_start) > new Date(period_end)) {
+      throw new ApiError(400, 'O período inicial não pode ser posterior ao período final.');
+    }
 
-// DELETE /api/jobs/:id/team/:memberId
-exports.removeTeamMember = asyncHandler(async (req, res) => {
-  const [rows] = await pool.query(
-    'SELECT id FROM job_team_members WHERE id = ? AND job_id = ?',
-    [req.params.memberId, req.params.id]
-  );
-  if (!rows.length) throw new ApiError(404, 'Vínculo de equipe não encontrado.');
+    let result;
+    try {
+      [result] = await pool.query(
+        `INSERT INTO jobs (job_number, client_id, period_start, period_end, tax_regime, segment, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [job_number, client_id, period_start, period_end, tax_regime || null, segment || null, req.user.id]
+      );
+    } catch (err) {
+      if (err.code === 'ER_DUP_ENTRY') throw new ApiError(409, 'Já existe um job com esse número.');
+      if (err.code === 'ER_NO_REFERENCED_ROW_2') throw new ApiError(400, 'Cliente informado não existe.');
+      throw err;
+    }
 
-  await pool.query('DELETE FROM job_team_members WHERE id = ?', [req.params.memberId]);
-  sendSuccess(res, null, { message: 'Membro removido da equipe do Job.' });
-});
+    const [rows] = await pool.query(`SELECT * FROM jobs WHERE id = ?`, [result.insertId]);
+
+    await logAction(req, {
+      action: 'JOB_CREATED', entityType: 'job', entityId: result.insertId, jobId: result.insertId,
+      details: { job_number, client_id, period_start, period_end },
+    });
+
+    res.status(201).json({ data: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updateStatus(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    const VALID = ['diagnostico', 'em_analise', 'revisao', 'parecer_emitido', 'concluido', 'cancelado'];
+    if (!VALID.includes(status)) throw new ApiError(400, 'Status inválido.');
+
+    const [before] = await pool.query(`SELECT status FROM jobs WHERE id = ?`, [id]);
+    if (!before[0]) throw new ApiError(404, 'Job não encontrado.');
+
+    await pool.query(`UPDATE jobs SET status = ? WHERE id = ?`, [status, id]);
+    const [rows] = await pool.query(`SELECT * FROM jobs WHERE id = ?`, [id]);
+
+    await logAction(req, {
+      action: 'JOB_STATUS_CHANGED', entityType: 'job', entityId: Number(id), jobId: Number(id),
+      details: { from: before[0].status, to: status },
+    });
+
+    res.json({ data: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── Equipe do job (um usuário por papel por job) ──────────────────────────
+
+async function setTeamMember(req, res, next) {
+  try {
+    const { jobId } = req.params;
+    const { role_in_job, user_id } = req.body;
+    if (!TEAM_ROLES.includes(role_in_job) || !user_id) {
+      throw new ApiError(400, 'Papel e usuário são obrigatórios.');
+    }
+
+    const [jobRows] = await pool.query(`SELECT id FROM jobs WHERE id = ?`, [jobId]);
+    if (!jobRows[0]) throw new ApiError(404, 'Job não encontrado.');
+
+    await pool.query(
+      `INSERT INTO job_team_members (job_id, role_in_job, user_id)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE user_id = VALUES(user_id)`,
+      [jobId, role_in_job, user_id]
+    );
+
+    await logAction(req, {
+      action: 'JOB_TEAM_MEMBER_SET', entityType: 'job_team_member', jobId: Number(jobId),
+      details: { role_in_job, user_id },
+    });
+
+    res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function removeTeamMember(req, res, next) {
+  try {
+    const { jobId, memberId } = req.params;
+    await pool.query(`DELETE FROM job_team_members WHERE job_id = ? AND id = ?`, [jobId, memberId]);
+
+    await logAction(req, {
+      action: 'JOB_TEAM_MEMBER_REMOVED', entityType: 'job_team_member', entityId: Number(memberId), jobId: Number(jobId),
+    });
+
+    res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── Diagnóstico (1:1 por job) ──────────────────────────────────────────────
+
+async function getDiagnostic(req, res, next) {
+  try {
+    const { jobId } = req.params;
+    const [rows] = await pool.query(`SELECT * FROM job_diagnostics WHERE job_id = ? LIMIT 1`, [jobId]);
+    if (!rows[0]) throw new ApiError(404, 'Diagnóstico ainda não preenchido.');
+    res.json({ data: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function upsertDiagnostic(req, res, next) {
+  try {
+    const { jobId } = req.params;
+
+    const [jobRows] = await pool.query(`SELECT id FROM jobs WHERE id = ?`, [jobId]);
+    if (!jobRows[0]) throw new ApiError(404, 'Job não encontrado.');
+
+    const values = DIAGNOSTIC_FIELDS.map((f) => (req.body[f] === undefined ? null : req.body[f]));
+    const insertCols = ['job_id', ...DIAGNOSTIC_FIELDS].join(', ');
+    const placeholders = ['?', ...DIAGNOSTIC_FIELDS.map(() => '?')].join(', ');
+    const updateSql = DIAGNOSTIC_FIELDS.map((f) => `${f} = VALUES(${f})`).join(', ');
+
+    await pool.query(
+      `INSERT INTO job_diagnostics (${insertCols}) VALUES (${placeholders})
+       ON DUPLICATE KEY UPDATE ${updateSql}`,
+      [jobId, ...values]
+    );
+
+    const [rows] = await pool.query(`SELECT * FROM job_diagnostics WHERE job_id = ?`, [jobId]);
+
+    await logAction(req, {
+      action: 'JOB_DIAGNOSTIC_UPDATED', entityType: 'job_diagnostic', jobId: Number(jobId),
+    });
+
+    res.json({ data: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updateDetails(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { tax_regime, segment } = req.body;
+    const VALID_REGIMES = ['Lucro Real', 'Lucro Presumido', 'Simples Nacional', 'Lucro Arbitrado'];
+    if (tax_regime !== undefined && tax_regime !== null && !VALID_REGIMES.includes(tax_regime)) {
+      throw new ApiError(400, 'Regime tributário inválido.');
+    }
+
+    const fields = [];
+    const params = [];
+    if (tax_regime !== undefined) { fields.push('tax_regime = ?'); params.push(tax_regime || null); }
+    if (segment !== undefined) { fields.push('segment = ?'); params.push(segment || null); }
+    if (fields.length === 0) throw new ApiError(400, 'Nenhum campo para atualizar.');
+
+    const [before] = await pool.query(`SELECT tax_regime, segment FROM jobs WHERE id = ?`, [id]);
+    if (!before[0]) throw new ApiError(404, 'Job não encontrado.');
+
+    params.push(id);
+    await pool.query(`UPDATE jobs SET ${fields.join(', ')} WHERE id = ?`, params);
+    const [rows] = await pool.query(`SELECT * FROM jobs WHERE id = ?`, [id]);
+
+    await logAction(req, {
+      action: 'JOB_DETAILS_UPDATED', entityType: 'job', entityId: Number(id), jobId: Number(id),
+      details: { before: before[0], after: { tax_regime, segment } },
+    });
+
+    res.json({ data: rows[0] });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = {
+  listClients, createClient,
+  list, get, create, updateStatus, updateDetails,
+  setTeamMember, removeTeamMember,
+  getDiagnostic, upsertDiagnostic,
+};
