@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as AdminDefinicoesDePontosRouteImport } from './routes/admin/definicoes-de-pontos'
 import { Route as AdminPontosDeCreditoRouteImport } from './routes/admin/pontos-de-credito'
 import { Route as AdminUsuariosRouteImport } from './routes/admin/usuarios'
 import { Route as JobsIndexRouteImport } from './routes/jobs/index'
@@ -24,6 +25,11 @@ const IndexRoute = IndexRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminDefinicoesDePontosRoute = AdminDefinicoesDePontosRouteImport.update({
+  id: '/admin/definicoes-de-pontos',
+  path: '/admin/definicoes-de-pontos',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdminPontosDeCreditoRoute = AdminPontosDeCreditoRouteImport.update({
@@ -50,6 +56,7 @@ const JobsJobIdRoute = JobsJobIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/admin/definicoes-de-pontos': typeof AdminDefinicoesDePontosRoute
   '/admin/pontos-de-credito': typeof AdminPontosDeCreditoRoute
   '/admin/usuarios': typeof AdminUsuariosRoute
   '/jobs/$jobId': typeof JobsJobIdRoute
@@ -58,6 +65,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/admin/definicoes-de-pontos': typeof AdminDefinicoesDePontosRoute
   '/admin/pontos-de-credito': typeof AdminPontosDeCreditoRoute
   '/admin/usuarios': typeof AdminUsuariosRoute
   '/jobs/$jobId': typeof JobsJobIdRoute
@@ -67,6 +75,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/admin/definicoes-de-pontos': typeof AdminDefinicoesDePontosRoute
   '/admin/pontos-de-credito': typeof AdminPontosDeCreditoRoute
   '/admin/usuarios': typeof AdminUsuariosRoute
   '/jobs/$jobId': typeof JobsJobIdRoute
@@ -77,6 +86,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
+    | '/admin/definicoes-de-pontos'
     | '/admin/pontos-de-credito'
     | '/admin/usuarios'
     | '/jobs/$jobId'
@@ -85,6 +95,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/login'
+    | '/admin/definicoes-de-pontos'
     | '/admin/pontos-de-credito'
     | '/admin/usuarios'
     | '/jobs/$jobId'
@@ -93,6 +104,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/login'
+    | '/admin/definicoes-de-pontos'
     | '/admin/pontos-de-credito'
     | '/admin/usuarios'
     | '/jobs/$jobId'
@@ -102,6 +114,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
+  AdminDefinicoesDePontosRoute: typeof AdminDefinicoesDePontosRoute
   AdminPontosDeCreditoRoute: typeof AdminPontosDeCreditoRoute
   AdminUsuariosRoute: typeof AdminUsuariosRoute
   JobsJobIdRoute: typeof JobsJobIdRoute
@@ -122,6 +135,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/definicoes-de-pontos': {
+      id: '/admin/definicoes-de-pontos'
+      path: '/admin/definicoes-de-pontos'
+      fullPath: '/admin/definicoes-de-pontos'
+      preLoaderRoute: typeof AdminDefinicoesDePontosRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/admin/pontos-de-credito': {
@@ -158,6 +178,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
+  AdminDefinicoesDePontosRoute: AdminDefinicoesDePontosRoute,
   AdminPontosDeCreditoRoute: AdminPontosDeCreditoRoute,
   AdminUsuariosRoute: AdminUsuariosRoute,
   JobsJobIdRoute: JobsJobIdRoute,

@@ -11,7 +11,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger,
 } from "@/components/ui/dialog";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { IdentificationImportModal } from "@/components/data-import/IdentificationImportModal";
+import { IdentificationImportModal } from "@/components/data-import/ImportWizards";
 
 const TAX_REGIME_OPTIONS: TaxRegime[] = ["Lucro Real", "Lucro Presumido", "Simples Nacional", "Lucro Arbitrado"];
 

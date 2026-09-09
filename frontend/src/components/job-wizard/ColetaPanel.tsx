@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { FileUp, Trash2, AlertTriangle } from "lucide-react";
+import { FileUp, Trash2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,11 +9,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import {
   perdcompApi, darfApi, spedM400Api, spedM610Api, pontosAdmApi, pontosFtxApi, ftxCategoriaApi,
 } from "@/lib/api";
-import { ImportWizard } from "@/components/data-import/ImportWizard";
-import { DataViewerModal } from "@/components/data-import/DataViewerModal";
-import { GenericDataViewerModal } from "@/components/data-import/GenericDataViewerModal";
-import { PontoImportWizard } from "@//components/data-import/PontoImportWizard";
-import { CategoriaImportWizard } from "@/components/data-import/CategoriaImportWizard";
+import { ImportWizard, PontoImportWizard, PontoMultiImportWizard, CategoriaImportWizard } from "@/components/data-import/ImportWizards";
+import { DataViewerModal, GenericDataViewerModal } from "@/components/data-import/DataViewerModal";
 import { PERDCOMP_CONFIG, DARF_CONFIG, M400_CONFIG, M610_CONFIG } from "@/lib/import/importConfigs";
 import type { ImportTableConfig } from "@/lib/import/importConfigs";
 import type { ParsedPontoMonthlyRow } from "@/lib/import/pontoMatrixParser";
@@ -161,6 +158,7 @@ function PontoCard({
   };
 }) {
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [multiWizardOpen, setMultiWizardOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const queryClient = useQueryClient();
   const queryKey = [`pontos-${category.toLowerCase()}`, jobId];
@@ -192,6 +190,9 @@ function PontoCard({
         </div>
         <div className="flex items-center gap-2 pt-1 flex-wrap">
           <Button size="sm" onClick={() => setWizardOpen(true)}><FileUp className="h-4 w-4" /> Importar ponto</Button>
+          <Button size="sm" variant="outline" onClick={() => setMultiWizardOpen(true)}>
+            <FileUp className="h-4 w-4" /> Importar vários pontos
+          </Button>
           <GenericDataViewerModal title={title} queryKey={queryKey} fetcher={() => api.list(jobId)} columns={PONTO_VIEW_COLUMNS} />
           {data.length > 0 && (
             <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive hover:bg-destructive/10"
@@ -206,6 +207,17 @@ function PontoCard({
         open={wizardOpen}
         onOpenChange={setWizardOpen}
         title={`Importar ${title}`}
+        onCommit={async (rows) => {
+          const res = await api.bulkImport(jobId, rows);
+          queryClient.invalidateQueries({ queryKey });
+          return res;
+        }}
+      />
+
+      <PontoMultiImportWizard
+        open={multiWizardOpen}
+        onOpenChange={setMultiWizardOpen}
+        title={title}
         onCommit={async (rows) => {
           const res = await api.bulkImport(jobId, rows);
           queryClient.invalidateQueries({ queryKey });

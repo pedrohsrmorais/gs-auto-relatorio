@@ -7,7 +7,7 @@ import type {
 import type { ParsedPontoMonthlyRow } from "@/lib/import/pontoMatrixParser";
 import type { ParsedCategoriaRow } from "@/lib/import/categoriaParser";
 
-// ─── Erro tipado ────────────────────────────────────────────────────────────F
+// ─── Erro tipado ──────────────────────────────────────────────────────────────
 
 export class ApiError extends Error {
   status: number;
@@ -20,10 +20,9 @@ export class ApiError extends Error {
   }
 }
 
-// ─── Armazenamento de tokens ────────────────────────────────────────────────
-// accessToken fica só em memória (mais seguro contra XSS); refreshToken vai
-// pro localStorage pra sobreviver a um F5. Isolado aqui pra ninguém fora
-// deste arquivo precisar saber onde/como os tokens são guardados.
+// ─── Armazenamento de tokens ──────────────────────────────────────────────────
+// accessToken fica só em memória (mais seguro contra XSS).
+// refreshToken vai pro localStorage para sobreviver a um F5.
 
 const REFRESH_TOKEN_KEY = "studio-fiscal:refreshToken";
 let accessToken: string | null = null;
@@ -42,7 +41,7 @@ export const tokenStorage = {
   },
 };
 
-// ─── Instância axios ────────────────────────────────────────────────────────
+// ─── Instância axios ──────────────────────────────────────────────────────────
 
 const http = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "/api",
@@ -54,16 +53,13 @@ http.interceptors.request.use((config) => {
   return config;
 });
 
-// Rotas que nunca devem disparar o fluxo de refresh (evita loop infinito).
 const AUTH_ROUTES = ["/auth/login", "/auth/refresh"];
-
 let refreshPromise: Promise<string | null> | null = null;
 
 async function refreshAccessToken(): Promise<string | null> {
   const refreshToken = tokenStorage.getRefreshToken();
   if (!refreshToken) return null;
 
-  // Se várias chamadas 401 chegam juntas, todas esperam o MESMO refresh.
   if (!refreshPromise) {
     refreshPromise = http
       .post("/auth/refresh", { refreshToken })
@@ -110,7 +106,7 @@ function qs(params: Record<string, unknown>): string {
   return new URLSearchParams(clean as [string, string][]).toString();
 }
 
-// ─── auth ───────────────────────────────────────────────────────────────────
+// ─── auth ─────────────────────────────────────────────────────────────────────
 
 export const authApi = {
   async login(data: { email: string; password: string }) {
@@ -139,7 +135,7 @@ export const authApi = {
   },
 };
 
-// ─── users (admin) ──────────────────────────────────────────────────────────
+// ─── users (admin) ────────────────────────────────────────────────────────────
 
 export const usersApi = {
   async list(params: { search?: string; role?: Role; is_active?: boolean; page?: number; limit?: number } = {}) {
@@ -163,7 +159,7 @@ export const usersApi = {
   },
 };
 
-// ─── taxes ──────────────────────────────────────────────────────────────────
+// ─── taxes ────────────────────────────────────────────────────────────────────
 
 export const taxesApi = {
   async list() {
@@ -172,7 +168,7 @@ export const taxesApi = {
   },
 };
 
-// ─── credit points (catálogo) ──────────────────────────────────────────────
+// ─── credit points (catálogo) ─────────────────────────────────────────────────
 
 export const creditPointsApi = {
   async list(params: {
@@ -195,7 +191,28 @@ export const creditPointsApi = {
   },
 };
 
-// ─── clients ────────────────────────────────────────────────────────────────
+// ─── credit point definitions (nomeação de pontos importados via planilha) ────
+
+export interface PointDefinition {
+  id: number;
+  category: "ADM" | "FTX";
+  external_id: string;
+  name: string;
+  updated_at: string;
+}
+
+export const creditPointDefinitionsApi = {
+  async list(params: { category?: "ADM" | "FTX"; search?: string } = {}): Promise<PointDefinition[]> {
+    const res = await http.get<{ data: PointDefinition[] }>(`/credit-point-definitions?${qs(params)}`);
+    return res.data.data;
+  },
+  async updateName(id: number, name: string): Promise<PointDefinition> {
+    const res = await http.patch<{ data: PointDefinition }>(`/credit-point-definitions/${id}`, { name });
+    return res.data.data;
+  },
+};
+
+// ─── clients ──────────────────────────────────────────────────────────────────
 
 export const clientsApi = {
   async list(params: { search?: string; page?: number; limit?: number } = {}) {
@@ -208,7 +225,7 @@ export const clientsApi = {
   },
 };
 
-// ─── jobs ───────────────────────────────────────────────────────────────────
+// ─── jobs ─────────────────────────────────────────────────────────────────────
 
 export const jobsApi = {
   async list(params: { search?: string; status?: JobStatus; client_id?: number; page?: number; limit?: number } = {}) {
@@ -228,12 +245,12 @@ export const jobsApi = {
     return res.data.data;
   },
   async updateDetails(id: number, data: { tax_regime?: TaxRegime; segment?: string }) {
-  const res = await http.patch<{ data: Job }>(`/jobs/${id}/details`, data);
+    const res = await http.patch<{ data: Job }>(`/jobs/${id}/details`, data);
     return res.data.data;
   },
 };
 
-// ─── diagnóstico (1:1 por job) ──────────────────────────────────────────────
+// ─── diagnóstico (1:1 por job) ────────────────────────────────────────────────
 
 export const jobDiagnosticApi = {
   async get(jobId: number): Promise<JobDiagnostic | null> {
@@ -251,7 +268,7 @@ export const jobDiagnosticApi = {
   },
 };
 
-// ─── análise de pontos de crédito + valores mensais ────────────────────────
+// ─── análise de pontos de crédito + valores mensais ──────────────────────────
 
 export const jobCreditAnalysisApi = {
   async list(jobId: number, params: { category?: CreditCategory; risk_color?: RiskColor; has_credit?: boolean } = {}) {
@@ -264,10 +281,6 @@ export const jobCreditAnalysisApi = {
     );
     return res.data.data;
   },
-  // Upsert por credit_point_id (não pelo id da análise) — bate com a rota
-  // PUT /jobs/:jobId/credit-analyses/:creditPointId do jobCreditAnalysis.controller.js.
-  // (Antes esta chamada tinha um segmento extra "/by-credit-point/" que não
-  // existe no backend e fazia cair no 404 handler de /api.)
   async upsertByCreditPoint(jobId: number, creditPointId: number, data: { has_credit: boolean; observations?: string }) {
     const res = await http.put<{ data: CreditPointAnalysis }>(
       `/jobs/${jobId}/credit-analyses/${creditPointId}`, data
@@ -291,9 +304,11 @@ export const jobCreditAnalysisApi = {
   },
 };
 
+// ─── tipos de dados das fontes brutas ────────────────────────────────────────
+
 import type { Perdcomp, DarfEntry, SpedM400Entry, SpedM610Entry } from "@/lib/types";
 
-// ─── PER/DCOMP ──────────────────────────────────────────────────────────────
+// ─── PER/DCOMP ────────────────────────────────────────────────────────────────
 
 export const perdcompApi = {
   async list(jobId: number): Promise<Perdcomp[]> {
@@ -313,7 +328,7 @@ export const perdcompApi = {
   },
 };
 
-// ─── DARF ───────────────────────────────────────────────────────────────────
+// ─── DARF ─────────────────────────────────────────────────────────────────────
 
 export const darfApi = {
   async list(jobId: number): Promise<DarfEntry[]> {
@@ -333,7 +348,7 @@ export const darfApi = {
   },
 };
 
-// ─── SPED M400 ──────────────────────────────────────────────────────────────
+// ─── SPED M400 ────────────────────────────────────────────────────────────────
 
 export const spedM400Api = {
   async list(jobId: number): Promise<SpedM400Entry[]> {
@@ -353,7 +368,7 @@ export const spedM400Api = {
   },
 };
 
-// ─── SPED M610 ──────────────────────────────────────────────────────────────
+// ─── SPED M610 ────────────────────────────────────────────────────────────────
 
 export const spedM610Api = {
   async list(jobId: number): Promise<SpedM610Entry[]> {
@@ -373,6 +388,7 @@ export const spedM610Api = {
   },
 };
 
+// ─── Pontos ADM ───────────────────────────────────────────────────────────────
 
 export const pontosAdmApi = {
   async list(jobId: number) {
@@ -391,7 +407,7 @@ export const pontosAdmApi = {
   },
 };
 
-// ─── Pontos FTX ─────────────────────────────────────────────────────────────
+// ─── Pontos FTX ───────────────────────────────────────────────────────────────
 
 export const pontosFtxApi = {
   async list(jobId: number) {
@@ -410,7 +426,7 @@ export const pontosFtxApi = {
   },
 };
 
-// ─── Comparativo por categoria (Relatório 2) ───────────────────────────────
+// ─── Comparativo por categoria (Relatório 2) ──────────────────────────────────
 
 export const ftxCategoriaApi = {
   async list(jobId: number) {

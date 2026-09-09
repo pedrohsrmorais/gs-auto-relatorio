@@ -1,8 +1,13 @@
 const { pool } = require('../config/database');
 
 /* =====================================================================
- * pontos.controller.js — importação de valores mensais por ponto de
- * crédito (ADM e FTX) e do comparativo por categoria (Relatório 2).
+ * pontos.controller.js
+ *
+ * Cobre três responsabilidades:
+ *   1. Valores mensais por ponto ADM  (tabela pontos_adm)
+ *   2. Valores mensais por ponto FTX  (tabela pontos_ftx)
+ *   3. Comparativo por categoria – Relatório 2  (pontos_ftx_categoria)
+ *   4. Gerenciamento de credit_point_definitions (listagem + renomeação)
  * ===================================================================== */
 
 class ApiError extends Error {
@@ -11,6 +16,8 @@ class ApiError extends Error {
     this.statusCode = statusCode;
   }
 }
+
+// ─── Auditoria ───────────────────────────────────────────────────────────────
 
 async function logAction(req, { action, entityType = null, entityId = null, jobId = null, details = null }) {
   try {
@@ -24,6 +31,8 @@ async function logAction(req, { action, entityType = null, entityId = null, jobI
   }
 }
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
 async function assertJobExists(jobId) {
   const [rows] = await pool.query(`SELECT id FROM jobs WHERE id = ?`, [jobId]);
   if (!rows[0]) throw new ApiError(404, 'Job não encontrado.');
@@ -34,20 +43,26 @@ function num(v) {
 }
 
 // Garante que existe uma definição de ponto (category + external_id); cria se necessário.
+// Só sobrescreve o nome existente se vier um nome novo e diferente na planilha.
 async function resolvePointDefinition(conn, category, externalId, name) {
   const [existing] = await conn.query(
     `SELECT id, name FROM credit_point_definitions WHERE category = ? AND external_id = ? LIMIT 1`,
     [category, externalId]
   );
+
   if (existing[0]) {
     if (name && name.trim() && name.trim() !== existing[0].name) {
-      await conn.query(`UPDATE credit_point_definitions SET name = ? WHERE id = ?`, [name.trim(), existing[0].id]);
+      await conn.query(
+        `UPDATE credit_point_definitions SET name = ? WHERE id = ?`,
+        [name.trim(), existing[0].id]
+      );
       return { id: existing[0].id, name: name.trim() };
     }
     return { id: existing[0].id, name: existing[0].name };
   }
 
-  const finalName = (name && name.trim()) || `Ponto ${externalId}`;
+  // Cria novo — se não vier nome da planilha deixa em branco para o usuário preencher
+  const finalName = (name && name.trim()) || '';
   const [result] = await conn.query(
     `INSERT INTO credit_point_definitions (category, external_id, name) VALUES (?, ?, ?)`,
     [category, externalId, finalName]
@@ -55,7 +70,7 @@ async function resolvePointDefinition(conn, category, externalId, name) {
   return { id: result.insertId, name: finalName };
 }
 
-// ─── Fábricas genéricas (mesma lógica para pontos_adm e pontos_ftx) ────────
+// ─── Fábricas genéricas (ADM e FTX compartilham a mesma lógica) ──────────────
 
 function listPontos(tableName) {
   return async (req, res, next) => {
@@ -105,7 +120,7 @@ function bulkImportPontos(category, tableName) {
              VALUES (?, ?, ?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE
                external_tax_id = VALUES(external_tax_id),
-               value = VALUES(value)`,
+               value           = VALUES(value)`,
             [jobId, point.id, row.external_tax_id ?? null, row.reference_month, row.contribution, num(row.value)]
           );
           inserted += 1;
@@ -120,7 +135,9 @@ function bulkImportPontos(category, tableName) {
       }
 
       await logAction(req, {
-        action: `${category}_PONTO_IMPORTED`, entityType: tableName, jobId: Number(jobId),
+        action: `${category}_PONTO_IMPORTED`,
+        entityType: tableName,
+        jobId: Number(jobId),
         details: { external_point_id: externalPointId, point_name: pointName, inserted },
       });
 
@@ -137,11 +154,16 @@ function clearPontos(tableName, logPrefix) {
       const { jobId } = req.params;
       await assertJobExists(jobId);
 
-      const [[{ count }]] = await pool.query(`SELECT COUNT(*) AS count FROM ${tableName} WHERE job_id = ?`, [jobId]);
+      const [[{ count }]] = await pool.query(
+        `SELECT COUNT(*) AS count FROM ${tableName} WHERE job_id = ?`,
+        [jobId]
+      );
       await pool.query(`DELETE FROM ${tableName} WHERE job_id = ?`, [jobId]);
 
       await logAction(req, {
-        action: `${logPrefix}_CLEARED`, entityType: tableName, jobId: Number(jobId),
+        action: `${logPrefix}_CLEARED`,
+        entityType: tableName,
+        jobId: Number(jobId),
         details: { deleted: count },
       });
 
@@ -152,23 +174,25 @@ function clearPontos(tableName, logPrefix) {
   };
 }
 
-// ─── Pontos ADM ─────────────────────────────────────────────────────────────
-const listAdm = listPontos('pontos_adm');
+// ─── Pontos ADM ───────────────────────────────────────────────────────────────
+const listAdm       = listPontos('pontos_adm');
 const bulkImportAdm = bulkImportPontos('ADM', 'pontos_adm');
-const clearAdm = clearPontos('pontos_adm', 'PONTOS_ADM');
+const clearAdm      = clearPontos('pontos_adm', 'PONTOS_ADM');
 
-// ─── Pontos FTX ─────────────────────────────────────────────────────────────
-const listFtx = listPontos('pontos_ftx');
+// ─── Pontos FTX ───────────────────────────────────────────────────────────────
+const listFtx       = listPontos('pontos_ftx');
 const bulkImportFtx = bulkImportPontos('FTX', 'pontos_ftx');
-const clearFtx = clearPontos('pontos_ftx', 'PONTOS_FTX');
+const clearFtx      = clearPontos('pontos_ftx', 'PONTOS_FTX');
 
-// ─── Comparativo por categoria (Relatório 2) ───────────────────────────────
+// ─── Comparativo por categoria (Relatório 2) ──────────────────────────────────
 
 async function listFtxCategoria(req, res, next) {
   try {
     const { jobId } = req.params;
     const [rows] = await pool.query(
-      `SELECT * FROM pontos_ftx_categoria WHERE job_id = ? ORDER BY reference_year DESC, risk_color, point_name`,
+      `SELECT * FROM pontos_ftx_categoria
+       WHERE job_id = ?
+       ORDER BY reference_year DESC, risk_color, point_name`,
       [jobId]
     );
     res.json({ data: rows });
@@ -208,7 +232,9 @@ async function bulkImportFtxCategoria(req, res, next) {
     }
 
     await logAction(req, {
-      action: 'FTX_CATEGORIA_IMPORTED', entityType: 'pontos_ftx_categoria', jobId: Number(jobId),
+      action: 'FTX_CATEGORIA_IMPORTED',
+      entityType: 'pontos_ftx_categoria',
+      jobId: Number(jobId),
       details: { inserted, total_rows: rows.length },
     });
 
@@ -223,11 +249,16 @@ async function clearFtxCategoria(req, res, next) {
     const { jobId } = req.params;
     await assertJobExists(jobId);
 
-    const [[{ count }]] = await pool.query(`SELECT COUNT(*) AS count FROM pontos_ftx_categoria WHERE job_id = ?`, [jobId]);
+    const [[{ count }]] = await pool.query(
+      `SELECT COUNT(*) AS count FROM pontos_ftx_categoria WHERE job_id = ?`,
+      [jobId]
+    );
     await pool.query(`DELETE FROM pontos_ftx_categoria WHERE job_id = ?`, [jobId]);
 
     await logAction(req, {
-      action: 'FTX_CATEGORIA_CLEARED', entityType: 'pontos_ftx_categoria', jobId: Number(jobId),
+      action: 'FTX_CATEGORIA_CLEARED',
+      entityType: 'pontos_ftx_categoria',
+      jobId: Number(jobId),
       details: { deleted: count },
     });
 
@@ -237,8 +268,94 @@ async function clearFtxCategoria(req, res, next) {
   }
 }
 
+// ─── Credit point definitions (gerenciamento de nomes) ───────────────────────
+
+/**
+ * GET /credit-point-definitions?category=ADM&search=...
+ * Lista todas as definições, com sem-nome ordenados primeiro.
+ */
+async function listDefinitions(req, res, next) {
+  try {
+    const { category, search } = req.query;
+
+    let sql = `SELECT id, category, external_id, name, created_at, updated_at
+               FROM credit_point_definitions
+               WHERE 1=1`;
+    const params = [];
+
+    if (category) {
+      sql += ` AND category = ?`;
+      params.push(category);
+    }
+
+    if (search) {
+      sql += ` AND (name LIKE ? OR external_id LIKE ?)`;
+      params.push(`%${search}%`, `%${search}%`);
+    }
+
+    // Sem-nome (string vazia) ficam no topo; depois alfabético; empate por external_id
+    sql += ` ORDER BY category ASC,
+                      COALESCE(NULLIF(TRIM(name), ''), '\xff') ASC,
+                      external_id ASC`;
+
+    const [rows] = await pool.query(sql, params);
+    res.json({ data: rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * PATCH /credit-point-definitions/:id
+ * Renomeia uma definição de ponto. Body: { name: string }
+ */
+async function updateDefinitionName(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { name } = req.body;
+
+    if (!name || !name.trim()) throw new ApiError(400, 'O nome não pode estar vazio.');
+
+    const [existing] = await pool.query(
+      `SELECT id, category, external_id, name FROM credit_point_definitions WHERE id = ?`,
+      [id]
+    );
+    if (!existing[0]) throw new ApiError(404, 'Definição de ponto não encontrada.');
+
+    const newName = name.trim();
+    await pool.query(`UPDATE credit_point_definitions SET name = ? WHERE id = ?`, [newName, id]);
+
+    await logAction(req, {
+      action: 'CREDIT_POINT_DEF_RENAMED',
+      entityType: 'credit_point_definitions',
+      entityId: Number(id),
+      details: {
+        old_name:    existing[0].name,
+        new_name:    newName,
+        category:    existing[0].category,
+        external_id: existing[0].external_id,
+      },
+    });
+
+    const [updated] = await pool.query(
+      `SELECT id, category, external_id, name, updated_at FROM credit_point_definitions WHERE id = ?`,
+      [id]
+    );
+    res.json({ data: updated[0] });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── Exports ──────────────────────────────────────────────────────────────────
+
 module.exports = {
+  // Pontos ADM
   listAdm, bulkImportAdm, clearAdm,
+  // Pontos FTX
   listFtx, bulkImportFtx, clearFtx,
+  // Comparativo por categoria
   listFtxCategoria, bulkImportFtxCategoria, clearFtxCategoria,
+  // Definições de pontos (nomeação)
+  listDefinitions, updateDefinitionName,
 };
