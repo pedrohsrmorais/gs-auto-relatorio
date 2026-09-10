@@ -1,7 +1,9 @@
 const { pool } = require('../config/database');
 
 /* =====================================================================
- * job.controller.js — clientes, jobs, equipe do job e diagnóstico (1:1).
+ * job.controller.js — jobs, equipe do job e diagnóstico (1:1).
+ * (Clientes agora vivem em clients.controller.js)
+ * (Diagnóstico de créditos PIS/COFINS agora vive em diagnostics.controller.js)
  * ===================================================================== */
 
 class ApiError extends Error {
@@ -14,14 +16,6 @@ class ApiError extends Error {
 const TEAM_ROLES = [
   'responsavel_tecnico', 'gerente_tributario', 'coordenador_tributario', 'analista_fiscal',
   'gerente_previdenciario', 'coordenador_previdenciario', 'analista_previdenciario',
-];
-
-const DIAGNOSTIC_FIELDS = [
-  'pays_darf', 'avg_monthly_pis_cofins', 'avg_yearly_pis_cofins',
-  'avg_monthly_irpj_csll', 'avg_yearly_irpj_csll', 'avg_monthly_inss', 'avg_yearly_inss',
-  'avg_monthly_ipi', 'avg_yearly_ipi', 'collection_method', 'opportunities_above_500k',
-  'already_credits_risk_point', 'has_debts_with_rfb', 'usage_plan', 'estimated_usage_months',
-  'observations',
 ];
 
 async function logAction(req, { action, entityType = null, entityId = null, jobId = null, details = null }) {
@@ -40,57 +34,6 @@ function getPagination(query) {
   const page = Math.max(1, Number(query.page) || 1);
   const limit = Math.min(200, Math.max(1, Number(query.limit) || 20));
   return { page, limit, offset: (page - 1) * limit };
-}
-
-// ─── Clientes ───────────────────────────────────────────────────────────────
-
-async function listClients(req, res, next) {
-  try {
-    const { search } = req.query;
-    const { page, limit, offset } = getPagination(req.query);
-    const where = search ? `WHERE company_name LIKE ? OR cnpj LIKE ?` : '';
-    const params = search ? [`%${search}%`, `%${search}%`] : [];
-
-    const [[{ total }]] = await pool.query(`SELECT COUNT(*) AS total FROM clients ${where}`, params);
-    const [rows] = await pool.query(
-      `SELECT * FROM clients ${where} ORDER BY company_name ASC LIMIT ? OFFSET ?`,
-      [...params, limit, offset]
-    );
-    res.json({ data: rows, total, page, limit });
-  } catch (err) {
-    next(err);
-  }
-}
-
-async function createClient(req, res, next) {
-  try {
-    const { cnpj, company_name, segment, tax_regime } = req.body;
-    if (!cnpj || !company_name) throw new ApiError(400, 'CNPJ e razão social são obrigatórios.');
-    const digitsOnly = String(cnpj).replace(/\D/g, '');
-    if (digitsOnly.length !== 14) throw new ApiError(400, 'CNPJ deve conter 14 dígitos.');
-
-    let result;
-    try {
-      [result] = await pool.query(
-        `INSERT INTO clients (cnpj, company_name, segment, tax_regime) VALUES (?, ?, ?, ?)`,
-        [digitsOnly, company_name, segment || null, tax_regime || null]
-      );
-    } catch (err) {
-      if (err.code === 'ER_DUP_ENTRY') throw new ApiError(409, 'Já existe um cliente com esse CNPJ.');
-      throw err;
-    }
-
-    const [rows] = await pool.query(`SELECT * FROM clients WHERE id = ?`, [result.insertId]);
-
-    await logAction(req, {
-      action: 'CLIENT_CREATED', entityType: 'client', entityId: result.insertId,
-      details: { company_name, cnpj: digitsOnly },
-    });
-
-    res.status(201).json({ data: rows[0] });
-  } catch (err) {
-    next(err);
-  }
 }
 
 // ─── Jobs ───────────────────────────────────────────────────────────────────
@@ -259,48 +202,7 @@ async function removeTeamMember(req, res, next) {
   }
 }
 
-// ─── Diagnóstico (1:1 por job) ──────────────────────────────────────────────
-
-async function getDiagnostic(req, res, next) {
-  try {
-    const { jobId } = req.params;
-    const [rows] = await pool.query(`SELECT * FROM job_diagnostics WHERE job_id = ? LIMIT 1`, [jobId]);
-    if (!rows[0]) throw new ApiError(404, 'Diagnóstico ainda não preenchido.');
-    res.json({ data: rows[0] });
-  } catch (err) {
-    next(err);
-  }
-}
-
-async function upsertDiagnostic(req, res, next) {
-  try {
-    const { jobId } = req.params;
-
-    const [jobRows] = await pool.query(`SELECT id FROM jobs WHERE id = ?`, [jobId]);
-    if (!jobRows[0]) throw new ApiError(404, 'Job não encontrado.');
-
-    const values = DIAGNOSTIC_FIELDS.map((f) => (req.body[f] === undefined ? null : req.body[f]));
-    const insertCols = ['job_id', ...DIAGNOSTIC_FIELDS].join(', ');
-    const placeholders = ['?', ...DIAGNOSTIC_FIELDS.map(() => '?')].join(', ');
-    const updateSql = DIAGNOSTIC_FIELDS.map((f) => `${f} = VALUES(${f})`).join(', ');
-
-    await pool.query(
-      `INSERT INTO job_diagnostics (${insertCols}) VALUES (${placeholders})
-       ON DUPLICATE KEY UPDATE ${updateSql}`,
-      [jobId, ...values]
-    );
-
-    const [rows] = await pool.query(`SELECT * FROM job_diagnostics WHERE job_id = ?`, [jobId]);
-
-    await logAction(req, {
-      action: 'JOB_DIAGNOSTIC_UPDATED', entityType: 'job_diagnostic', jobId: Number(jobId),
-    });
-
-    res.json({ data: rows[0] });
-  } catch (err) {
-    next(err);
-  }
-}
+// ─── Detalhes gerais do job ─────────────────────────────────────────────────
 
 async function updateDetails(req, res, next) {
   try {
@@ -336,8 +238,6 @@ async function updateDetails(req, res, next) {
 }
 
 module.exports = {
-  listClients, createClient,
   list, get, create, updateStatus, updateDetails,
   setTeamMember, removeTeamMember,
-  getDiagnostic, upsertDiagnostic,
 };

@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Plus, FileUp } from "lucide-react";
+import { Plus, FileUp, UserPlus, ArrowLeft } from "lucide-react";
 import { jobsApi, clientsApi } from "@/lib/api";
 import type { TaxRegime } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,10 @@ import { IdentificationImportModal } from "@/components/data-import/ImportWizard
 
 const TAX_REGIME_OPTIONS: TaxRegime[] = ["Lucro Real", "Lucro Presumido", "Simples Nacional", "Lucro Arbitrado"];
 
+function normalize(s: string) {
+  return s.trim().toLowerCase();
+}
+
 export function NewJobDialog() {
   const [open, setOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -27,6 +31,11 @@ export function NewJobDialog() {
   const [taxRegime, setTaxRegime] = useState<TaxRegime | "">("");
   const [segment, setSegment] = useState("");
 
+  // ─── Criação rápida de cliente ────────────────────────────────────────
+  const [creatingClient, setCreatingClient] = useState(false);
+  const [newClientCnpj, setNewClientCnpj] = useState("");
+  const [newClientName, setNewClientName] = useState("");
+
   const queryClient = useQueryClient();
 
   const { data: clientsPage } = useQuery({
@@ -34,6 +43,14 @@ export function NewJobDialog() {
     queryFn: () => clientsApi.list({ search: companySearch || undefined, limit: 10 }),
     enabled: companySearch.length >= 2,
   });
+
+  // Auto-seleciona quando o texto buscado bate exatamente com um cliente já
+  // cadastrado — cobre o caso de vir preenchido pela importação do Relatório 1.
+  useEffect(() => {
+    if (clientId || !clientsPage || companySearch.length < 2) return;
+    const exact = clientsPage.data.find((c) => normalize(c.company_name) === normalize(companySearch));
+    if (exact) setClientId(exact.id);
+  }, [clientsPage, companySearch, clientId]);
 
   const mutation = useMutation({
     mutationFn: () => {
@@ -56,9 +73,35 @@ export function NewJobDialog() {
     onError: (err) => toast.error(err instanceof Error ? err.message : "Erro ao criar job."),
   });
 
+  const createClientMutation = useMutation({
+    mutationFn: () => {
+      if (!newClientCnpj.trim() || !newClientName.trim()) {
+        throw new Error("Informe CNPJ e razão social do novo cliente.");
+      }
+      return clientsApi.create({ cnpj: newClientCnpj, company_name: newClientName });
+    },
+    onSuccess: (client) => {
+      toast.success("Cliente cadastrado.");
+      setClientId(client.id);
+      setCompanySearch(client.company_name);
+      setCreatingClient(false);
+      setNewClientCnpj("");
+      setNewClientName("");
+      queryClient.invalidateQueries({ queryKey: ["clients-search"] });
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Erro ao cadastrar cliente."),
+  });
+
   function reset() {
     setJobNumber(""); setCompanySearch(""); setClientId("");
     setPeriodStart(""); setPeriodEnd(""); setTaxRegime(""); setSegment("");
+    setCreatingClient(false); setNewClientCnpj(""); setNewClientName("");
+  }
+
+  function openCreateClient() {
+    setNewClientName(companySearch);
+    setNewClientCnpj("");
+    setCreatingClient(true);
   }
 
   return (
@@ -82,21 +125,71 @@ export function NewJobDialog() {
 
           <div className="space-y-1.5">
             <Label className="text-xs">Cliente (busque pelo nome)</Label>
-            <Input value={companySearch} onChange={(e) => { setCompanySearch(e.target.value); setClientId(""); }} placeholder="Digite ao menos 2 letras…" />
-            {clientsPage && clientsPage.data.length > 0 && !clientId && (
-              <div className="border border-border rounded-lg divide-y divide-border max-h-40 overflow-auto">
-                {clientsPage.data.map((c) => (
-                  <button
-                    key={c.id} type="button"
-                    className="w-full text-left px-3 py-2 text-sm hover:bg-muted"
-                    onClick={() => { setClientId(c.id); setCompanySearch(c.company_name); }}
+
+            {!creatingClient ? (
+              <>
+                <Input
+                  value={companySearch}
+                  onChange={(e) => { setCompanySearch(e.target.value); setClientId(""); }}
+                  placeholder="Digite ao menos 2 letras…"
+                />
+
+                {companySearch.length >= 2 && !clientId && (
+                  <div className="border border-border rounded-lg divide-y divide-border max-h-40 overflow-auto">
+                    {clientsPage && clientsPage.data.length > 0 ? (
+                      clientsPage.data.map((c) => (
+                        <button
+                          key={c.id} type="button"
+                          className="w-full text-left px-3 py-2 text-sm hover:bg-muted"
+                          onClick={() => { setClientId(c.id); setCompanySearch(c.company_name); }}
+                        >
+                          {c.company_name} <span className="text-muted-foreground">— {c.cnpj}</span>
+                        </button>
+                      ))
+                    ) : (
+                      <p className="px-3 py-2 text-sm text-muted-foreground">Nenhum cliente encontrado.</p>
+                    )}
+                    <button
+                      type="button"
+                      className="w-full flex items-center gap-2 text-left px-3 py-2 text-sm text-primary hover:bg-muted"
+                      onClick={openCreateClient}
+                    >
+                      <UserPlus className="h-4 w-4" /> Cadastrar novo cliente "{companySearch}"
+                    </button>
+                  </div>
+                )}
+
+                {clientId && <p className="text-xs text-success">Cliente selecionado.</p>}
+              </>
+            ) : (
+              <div className="border border-border rounded-lg p-3 space-y-2.5 bg-muted/30">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Razão social</Label>
+                  <Input value={newClientName} onChange={(e) => setNewClientName(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">CNPJ (somente números)</Label>
+                  <Input
+                    value={newClientCnpj}
+                    onChange={(e) => setNewClientCnpj(e.target.value.replace(/\D/g, ""))}
+                    placeholder="00000000000000"
+                    maxLength={14}
+                  />
+                </div>
+                <div className="flex justify-between pt-1">
+                  <Button type="button" variant="outline" size="sm" onClick={() => setCreatingClient(false)}>
+                    <ArrowLeft className="h-4 w-4" /> Voltar à busca
+                  </Button>
+                  <Button
+                    type="button" size="sm"
+                    onClick={() => createClientMutation.mutate()}
+                    disabled={createClientMutation.isPending}
                   >
-                    {c.company_name} <span className="text-muted-foreground">— {c.cnpj}</span>
-                  </button>
-                ))}
+                    {createClientMutation.isPending ? "Cadastrando…" : "Cadastrar cliente"}
+                  </Button>
+                </div>
               </div>
             )}
-            {clientId && <p className="text-xs text-success">Cliente selecionado.</p>}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -140,7 +233,7 @@ export function NewJobDialog() {
         onOpenChange={setImportOpen}
         onApply={(data) => {
           if (data.job_number) setJobNumber(data.job_number);
-          if (data.company_name) setCompanySearch(data.company_name);
+          if (data.company_name) { setCompanySearch(data.company_name); setClientId(""); }
           if (data.segment) setSegment(data.segment);
           if (data.tax_regime) setTaxRegime(data.tax_regime);
         }}

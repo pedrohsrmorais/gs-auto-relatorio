@@ -9,6 +9,8 @@ const perdcompController    = require('../controllers/perdcomp.controller');
 const darfController        = require('../controllers/darf.controller');
 const pontosController      = require('../controllers/pontos.controller');
 const logsController        = require('../controllers/logs.controller');
+const clientsController     = require('../controllers/clients.controller');
+const diagnosticsController = require('../controllers/diagnostics.controller');
 
 const router = Router();
 
@@ -34,8 +36,8 @@ router.patch('/users/:id/role',     authorize('admin'), usersController.updateRo
 router.delete('/users/:id',         authorize('admin'), usersController.deactivate);
 
 // Clientes
-router.get('/clients',  jobController.listClients);
-router.post('/clients', jobController.createClient);
+router.get('/clients',  clientsController.list);
+router.post('/clients', clientsController.create);
 
 // Jobs
 router.get('/jobs',                 jobController.list);
@@ -48,9 +50,10 @@ router.patch('/jobs/:id/details',   jobController.updateDetails);
 router.put('/jobs/:jobId/team',                   jobController.setTeamMember);
 router.delete('/jobs/:jobId/team/:memberId',      jobController.removeTeamMember);
 
-// Diagnóstico
-router.get('/jobs/:jobId/diagnostic',  jobController.getDiagnostic);
-router.put('/jobs/:jobId/diagnostic',  jobController.upsertDiagnostic);
+// Diagnóstico — créditos PIS/COFINS consolidados por ponto (ADM/FTX)
+router.get('/jobs/:jobId/diagnostics/points',                                   diagnosticsController.listPoints);
+router.get('/jobs/:jobId/diagnostics/points/:creditPointDefinitionId/monthly',  diagnosticsController.getMonthly);
+router.put('/jobs/:jobId/diagnostics/points/:creditPointDefinitionId',          diagnosticsController.updateNote);
 
 // PER/DCOMP
 router.get('/jobs/:jobId/perdcomps',                  perdcompController.list);

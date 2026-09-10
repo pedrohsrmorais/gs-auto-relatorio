@@ -3,11 +3,11 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { CheckCircle2, Circle, ClipboardList, Building2, UploadCloud } from "lucide-react";
-import { jobsApi, taxesApi, creditPointsApi, jobCreditAnalysisApi, jobDiagnosticApi } from "@/lib/api";
+import { jobsApi, taxesApi, creditPointsApi, jobCreditAnalysisApi } from "@/lib/api";
 import type { JobStatus } from "@/lib/types";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { ColetaPanel } from "@/components/job-wizard/ColetaPanel";
-import { DiagnosticoForm } from "@/components/job-wizard/DiagnosticoForm";
+import { DiagnosticoPanel } from "@/components/job-wizard/DiagnosticoPanel";
 import { TributoPanel } from "@/components/job-wizard/TributoPanel";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -124,10 +124,6 @@ function JobWizardPage() {
     queryKey: ["job-credit-analyses", jobId],
     queryFn: () => jobCreditAnalysisApi.list(jobId, {}),
   });
-  const { data: diagnostic } = useQuery({
-    queryKey: ["job-diagnostic", jobId],
-    queryFn: () => jobDiagnosticApi.get(jobId),
-  });
 
   const creditPoints = useMemo(() => creditPointsPage?.data ?? [], [creditPointsPage]);
 
@@ -172,8 +168,8 @@ function JobWizardPage() {
           />
           <SectionLink
             active={section === "diagnostico"} onClick={() => setSection("diagnostico")}
-            icon={diagnostic ? <CheckCircle2 className="h-4 w-4 text-success" /> : <Circle className="h-4 w-4" />}
-            label="Diagnóstico" done={!!diagnostic}
+            icon={<Circle className="h-4 w-4" />}
+            label="Diagnóstico"
           />
           {taxes.map((tax) => {
             const points = creditPointsByTax.get(tax.id) ?? [];
@@ -196,7 +192,7 @@ function JobWizardPage() {
         <div>
           {section === "overview" && <OverviewPanel jobId={jobId} />}
           {section === "coleta" && <ColetaPanel jobId={jobId} />}
-          {section === "diagnostico" && <DiagnosticoForm jobId={jobId} />}
+          {section === "diagnostico" && <DiagnosticoPanel jobId={jobId} />}
           {taxes.map((tax) =>
             section === `tax-${tax.id}` ? (
               <TributoPanel

@@ -1,6 +1,6 @@
 import axios, { AxiosError } from "axios";
 import type {
-  User, Client, Job, JobDetail, Tax, CreditPoint, JobDiagnostic,
+  User, Client, Job, JobDetail, Tax, CreditPoint, 
   CreditPointAnalysis, MonthlyValue, PaginatedResponse, Role, CreditCategory,
   RiskColor, TaxRegime, JobStatus, Contribution,
 } from "@/lib/types";
@@ -250,23 +250,7 @@ export const jobsApi = {
   },
 };
 
-// ─── diagnóstico (1:1 por job) ────────────────────────────────────────────────
 
-export const jobDiagnosticApi = {
-  async get(jobId: number): Promise<JobDiagnostic | null> {
-    try {
-      const res = await http.get<{ data: JobDiagnostic }>(`/jobs/${jobId}/diagnostic`);
-      return res.data.data;
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 404) return null;
-      throw err;
-    }
-  },
-  async upsert(jobId: number, data: Partial<Omit<JobDiagnostic, "id" | "job_id">>) {
-    const res = await http.put<{ data: JobDiagnostic }>(`/jobs/${jobId}/diagnostic`, data);
-    return res.data.data;
-  },
-};
 
 // ─── análise de pontos de crédito + valores mensais ──────────────────────────
 
@@ -439,6 +423,53 @@ export const ftxCategoriaApi = {
   },
   async clearAll(jobId: number) {
     const res = await http.delete<{ data: { deleted: number } }>(`/jobs/${jobId}/ftx-categoria`);
+    return res.data.data;
+  },
+};
+
+// ─── diagnóstico (créditos PIS/COFINS por ponto, ADM/FTX) ─────────────────────
+
+export type DiagnosticCategory = "ADM" | "FTX";
+
+export interface DiagnosticPointSummary {
+  credit_point_definition_id: number;
+  external_id: string;
+  name: string;
+  pis_total: number;
+  cofins_total: number;
+  total: number;
+  risk_color: "VERDE" | "AMARELO" | "VERMELHO" | null;
+  observations: string | null;
+}
+
+export interface DiagnosticMonthlyRow {
+  reference_month: string;
+  pis_value: number;
+  cofins_value: number;
+}
+
+export const diagnosticsApi = {
+  async listPoints(jobId: number, category: DiagnosticCategory): Promise<DiagnosticPointSummary[]> {
+    const res = await http.get<{ data: DiagnosticPointSummary[] }>(
+      `/jobs/${jobId}/diagnostics/points?category=${category}`
+    );
+    return res.data.data;
+  },
+  async getMonthly(
+    jobId: number, creditPointDefinitionId: number, category: DiagnosticCategory
+  ): Promise<DiagnosticMonthlyRow[]> {
+    const res = await http.get<{ data: DiagnosticMonthlyRow[] }>(
+      `/jobs/${jobId}/diagnostics/points/${creditPointDefinitionId}/monthly?category=${category}`
+    );
+    return res.data.data;
+  },
+  async updateNote(
+    jobId: number, creditPointDefinitionId: number,
+    data: { risk_color?: "VERDE" | "AMARELO" | "VERMELHO" | null; observations?: string | null }
+  ) {
+    const res = await http.put<{ data: unknown }>(
+      `/jobs/${jobId}/diagnostics/points/${creditPointDefinitionId}`, data
+    );
     return res.data.data;
   },
 };
