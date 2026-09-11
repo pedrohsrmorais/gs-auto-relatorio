@@ -1,11 +1,8 @@
 import axios, { AxiosError } from "axios";
 import type {
-  User, Client, Job, JobDetail, Tax, CreditPoint, 
-  CreditPointAnalysis, MonthlyValue, PaginatedResponse, Role, CreditCategory,
-  RiskColor, TaxRegime, JobStatus, Contribution,
+  User, Client, Job, JobDetail, JobDiagnostic, PaginatedResponse, Role, TaxRegime, JobStatus,
 } from "@/lib/types";
-import type { ParsedPontoMonthlyRow } from "@/lib/import/pontoMatrixParser";
-import type { ParsedCategoriaRow } from "@/lib/import/categoriaParser";
+import type { ParsedPontoMonthlyRow, ParsedIpiMonthlyRow } from "@/lib/import/customParsers";
 
 // ─── Erro tipado ──────────────────────────────────────────────────────────────
 
@@ -21,8 +18,6 @@ export class ApiError extends Error {
 }
 
 // ─── Armazenamento de tokens ──────────────────────────────────────────────────
-// accessToken fica só em memória (mais seguro contra XSS).
-// refreshToken vai pro localStorage para sobreviver a um F5.
 
 const REFRESH_TOKEN_KEY = "studio-fiscal:refreshToken";
 let accessToken: string | null = null;
@@ -159,55 +154,104 @@ export const usersApi = {
   },
 };
 
-// ─── taxes ────────────────────────────────────────────────────────────────────
+// ─── credit point definitions (catálogo global de pontos ADM/FTX) ────────────
 
-export const taxesApi = {
-  async list() {
-    const res = await http.get<{ data: Tax[] }>("/taxes");
-    return res.data.data;
-  },
-};
-
-// ─── credit points (catálogo) ─────────────────────────────────────────────────
-
-export const creditPointsApi = {
-  async list(params: {
-    tax_id?: number; category?: CreditCategory; risk_color?: RiskColor;
-    is_active?: boolean; search?: string; page?: number; limit?: number;
-  } = {}) {
-    const res = await http.get<PaginatedResponse<CreditPoint>>(`/credit-points?${qs(params)}`);
-    return res.data;
-  },
-  async create(data: { tax_id: number; name: string; category: CreditCategory; risk_color?: RiskColor; legal_criteria?: string }) {
-    const res = await http.post<{ data: CreditPoint }>("/credit-points", data);
-    return res.data.data;
-  },
-  async update(id: number, data: Partial<Pick<CreditPoint, "name" | "category" | "risk_color" | "legal_criteria" | "is_active">>) {
-    const res = await http.put<{ data: CreditPoint }>(`/credit-points/${id}`, data);
-    return res.data.data;
-  },
-  async deactivate(id: number) {
-    await http.delete(`/credit-points/${id}`);
-  },
-};
-
-// ─── credit point definitions (nomeação de pontos importados via planilha) ────
+export type TaxCode = "PIS_COFINS" | "IRPJ_CSLL" | "INSS" | "IPI" | "ICMS";
+export type PointNature = "CREDITO" | "PASSIVO";
 
 export interface PointDefinition {
   id: number;
   category: "ADM" | "FTX";
+  tax_id: number | null;
+  tax_code: TaxCode | null;
+  tax_name: string | null;
+  nature: PointNature;
   external_id: string;
   name: string;
+  risk_color: "VERDE" | "AMARELO" | "VERMELHO" | null;
   updated_at: string;
 }
 
+export interface DefinitionImportRow {
+  external_id: string;
+  name: string;
+  risk_color?: "VERDE" | "AMARELO" | "VERMELHO" | null;
+  /**
+   * Tributo/natureza DESTA linha específica — as planilhas mestre (PRT para
+   * ADM, Fintax para FTX) trazem uma coluna NOME TRIBUTO por linha, então
+   * cada ponto pode ter um tributo diferente dentro do MESMO arquivo.
+   * Quando ausente, o backend usa o `defaultTaxCode`/`nature` passados para
+   * bulkImport como fallback (útil só para planilhas sem essa coluna).
+   */
+  tax_code?: TaxCode;
+  nature?: PointNature;
+}
+
+export interface DefinitionBulkImportResult {
+  inserted: number;
+  updated: number;
+  skipped: number;
+  unknownTaxCodes: string[];
+}
+
 export const creditPointDefinitionsApi = {
-  async list(params: { category?: "ADM" | "FTX"; search?: string } = {}): Promise<PointDefinition[]> {
+  async list(params: { category?: "ADM" | "FTX"; tax?: TaxCode; nature?: PointNature; search?: string } = {}): Promise<PointDefinition[]> {
     const res = await http.get<{ data: PointDefinition[] }>(`/credit-point-definitions?${qs(params)}`);
     return res.data.data;
   },
   async updateName(id: number, name: string): Promise<PointDefinition> {
     const res = await http.patch<{ data: PointDefinition }>(`/credit-point-definitions/${id}`, { name });
+    return res.data.data;
+  },
+  async updateRiskColor(id: number, riskColor: "VERDE" | "AMARELO" | "VERMELHO" | null): Promise<PointDefinition> {
+    const res = await http.patch<{ data: PointDefinition }>(`/credit-point-definitions/${id}`, { risk_color: riskColor });
+    return res.data.data;
+  },
+  async updateTax(id: number, taxCode: TaxCode): Promise<PointDefinition> {
+    const res = await http.patch<{ data: PointDefinition }>(`/credit-point-definitions/${id}`, { tax_code: taxCode });
+    return res.data.data;
+  },
+  /**
+   * `defaultTaxCode`/`defaultNature` são só FALLBACK — se as `rows` já
+   * trouxerem `tax_code`/`nature` próprios (planilhas PRT/Fintax, que têm
+   * coluna NOME TRIBUTO), o valor de cada linha prevalece.
+   */
+  async bulkImport(
+    category: "ADM" | "FTX",
+    rows: DefinitionImportRow[],
+    defaultTaxCode?: TaxCode,
+    defaultNature: PointNature = "CREDITO"
+  ): Promise<DefinitionBulkImportResult> {
+    const res = await http.post<{ data: DefinitionBulkImportResult }>(
+      "/credit-point-definitions/bulk-import",
+      { category, tax_code: defaultTaxCode, nature: defaultNature, rows }
+    );
+    return res.data.data;
+  },
+  /** Bloqueado pelo backend (409) se o ponto já tiver valores importados em algum job. */
+  async remove(id: number) {
+    await http.delete(`/credit-point-definitions/${id}`);
+  },
+  /**
+   * Cria UM ponto manualmente — usado pelos wizards de IPI/IR-CSLL quando o
+   * usuário confirma explicitamente que o ponto não existe no catálogo.
+   * Nunca é chamado automaticamente/silenciosamente.
+   */
+  async quickCreate(category: "ADM" | "FTX", taxCode: TaxCode, name: string, nature: PointNature = "CREDITO") {
+    const res = await http.post<{ data: { id: number; name: string; external_id: string } }>(
+      "/credit-point-definitions/quick-create",
+      { category, tax_code: taxCode, name, nature }
+    );
+    return res.data.data;
+  },
+  /**
+   * Apaga TODOS os pontos do catálogo global E todos os valores já
+   * importados em QUALQUER job (pontos_adm/ftx/ipi/ir_csll, observações).
+   * Destrutivo e irreversível — sempre confirme explicitamente com o
+   * usuário antes de chamar isso.
+   */
+  async resetAll(): Promise<{ deleted: Record<string, number> }> {
+    const res = await http.delete<{ data: { deleted: Record<string, number> } }>("/credit-point-definitions");
     return res.data.data;
   },
 };
@@ -222,6 +266,9 @@ export const clientsApi = {
   async create(data: { cnpj: string; company_name: string; segment?: string; tax_regime?: TaxRegime }) {
     const res = await http.post<{ data: Client }>("/clients", data);
     return res.data.data;
+  },
+  async remove(id: number) {
+    await http.delete(`/clients/${id}`);
   },
 };
 
@@ -248,41 +295,82 @@ export const jobsApi = {
     const res = await http.patch<{ data: Job }>(`/jobs/${id}/details`, data);
     return res.data.data;
   },
+  async remove(id: number) {
+    await http.delete(`/jobs/${id}`);
+  },
 };
 
+// ─── diagnóstico do job (1:1 — campos gerais, ex: parecer geral do job) ──────
 
-
-// ─── análise de pontos de crédito + valores mensais ──────────────────────────
-
-export const jobCreditAnalysisApi = {
-  async list(jobId: number, params: { category?: CreditCategory; risk_color?: RiskColor; has_credit?: boolean } = {}) {
-    const res = await http.get<{ data: CreditPointAnalysis[] }>(`/jobs/${jobId}/credit-analyses?${qs(params)}`);
+export const jobDiagnosticApi = {
+  async get(jobId: number): Promise<JobDiagnostic | null> {
+    try {
+      const res = await http.get<{ data: JobDiagnostic }>(`/jobs/${jobId}/diagnostic`);
+      return res.data.data;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
+  async upsert(jobId: number, data: Partial<Omit<JobDiagnostic, "id" | "job_id">>) {
+    const res = await http.put<{ data: JobDiagnostic }>(`/jobs/${jobId}/diagnostic`, data);
     return res.data.data;
   },
-  async get(jobId: number, analysisId: number) {
-    const res = await http.get<{ data: CreditPointAnalysis & { monthlyValues: MonthlyValue[] } }>(
-      `/jobs/${jobId}/credit-analyses/${analysisId}`
+};
+
+// ─── diagnóstico por ponto (ADM/FTX x PIS_COFINS/IPI/IRPJ_CSLL) ──────────────
+
+export type DiagnosticCategory = "ADM" | "FTX";
+export type DiagnosticTax = "PIS_COFINS" | "IPI" | "IRPJ_CSLL";
+
+export interface DiagnosticBreakdownItem {
+  label: string;
+  value: number;
+}
+
+export interface DiagnosticPointSummary {
+  credit_point_definition_id: number;
+  external_id: string;
+  name: string;
+  risk_color: "VERDE" | "AMARELO" | "VERMELHO" | null;
+  total: number;
+  breakdown: DiagnosticBreakdownItem[];
+  observations: string | null;
+  // Campos legados (só vêm preenchidos quando tax=PIS_COFINS, mantidos
+  // para não quebrar código existente que ainda lê pis_total/cofins_total).
+  pis_total?: number;
+  cofins_total?: number;
+  irpj_total?: number;
+  csll_total?: number;
+}
+
+export interface DiagnosticMonthlyRow {
+  period_label: string;
+  total: number;
+  pis_value?: number;
+  cofins_value?: number;
+  irpj_value?: number;
+  csll_value?: number;
+}
+
+export const diagnosticsApi = {
+  async listPoints(jobId: number, category: DiagnosticCategory, tax: DiagnosticTax = "PIS_COFINS"): Promise<DiagnosticPointSummary[]> {
+    const res = await http.get<{ data: DiagnosticPointSummary[] }>(
+      `/jobs/${jobId}/diagnostics/points?${qs({ category, tax })}`
     );
     return res.data.data;
   },
-  async upsertByCreditPoint(jobId: number, creditPointId: number, data: { has_credit: boolean; observations?: string }) {
-    const res = await http.put<{ data: CreditPointAnalysis }>(
-      `/jobs/${jobId}/credit-analyses/${creditPointId}`, data
+  async getMonthly(
+    jobId: number, creditPointDefinitionId: number, category: DiagnosticCategory, tax: DiagnosticTax = "PIS_COFINS"
+  ): Promise<DiagnosticMonthlyRow[]> {
+    const res = await http.get<{ data: DiagnosticMonthlyRow[] }>(
+      `/jobs/${jobId}/diagnostics/points/${creditPointDefinitionId}/monthly?${qs({ category, tax })}`
     );
     return res.data.data;
   },
-  async setMonthlyValue(jobId: number, analysisId: number, month: string, data: { contribution?: Contribution; value: number }) {
-    const res = await http.put<{ data: { total_credit_value: number } }>(
-      `/jobs/${jobId}/credit-analyses/${analysisId}/months/${month}`, data
-    );
-    return res.data.data;
-  },
-  async bulkSetMonthlyValues(
-    jobId: number, analysisId: number,
-    entries: Array<{ contribution?: Contribution; reference_month: string; value: number }>
-  ) {
-    const res = await http.post<{ data: { total_credit_value: number; monthlyValues: MonthlyValue[] } }>(
-      `/jobs/${jobId}/credit-analyses/${analysisId}/months/bulk`, { entries }
+  async updateNote(jobId: number, creditPointDefinitionId: number, data: { observations?: string | null }) {
+    const res = await http.put<{ data: unknown }>(
+      `/jobs/${jobId}/diagnostics/points/${creditPointDefinitionId}`, data
     );
     return res.data.data;
   },
@@ -372,7 +460,19 @@ export const spedM610Api = {
   },
 };
 
-// ─── Pontos ADM ───────────────────────────────────────────────────────────────
+// ─── Pontos ADM (valores mensais por job, PIS/COFINS) ────────────────────────
+
+export interface PontoImportGroup {
+  external_point_id: string;
+  rows: ParsedPontoMonthlyRow[];
+  point_name?: string;
+}
+
+export interface PontoImportResult {
+  inserted: number;
+  pointName: string;
+  points: { external_point_id: string; point_name: string; inserted: number }[];
+}
 
 export const pontosAdmApi = {
   async list(jobId: number) {
@@ -380,8 +480,14 @@ export const pontosAdmApi = {
     return res.data.data;
   },
   async bulkImport(jobId: number, rows: ParsedPontoMonthlyRow[]) {
-    const res = await http.post<{ data: { inserted: number; pointName: string } }>(
+    const res = await http.post<{ data: PontoImportResult }>(
       `/jobs/${jobId}/pontos-adm/bulk-import`, { rows }
+    );
+    return res.data.data;
+  },
+  async bulkImportGroups(jobId: number, groups: PontoImportGroup[]) {
+    const res = await http.post<{ data: PontoImportResult }>(
+      `/jobs/${jobId}/pontos-adm/bulk-import`, { groups }
     );
     return res.data.data;
   },
@@ -391,7 +497,7 @@ export const pontosAdmApi = {
   },
 };
 
-// ─── Pontos FTX ───────────────────────────────────────────────────────────────
+// ─── Pontos FTX (valores mensais por job, PIS/COFINS) ────────────────────────
 
 export const pontosFtxApi = {
   async list(jobId: number) {
@@ -399,8 +505,14 @@ export const pontosFtxApi = {
     return res.data.data;
   },
   async bulkImport(jobId: number, rows: ParsedPontoMonthlyRow[]) {
-    const res = await http.post<{ data: { inserted: number; pointName: string } }>(
+    const res = await http.post<{ data: PontoImportResult }>(
       `/jobs/${jobId}/pontos-ftx/bulk-import`, { rows }
+    );
+    return res.data.data;
+  },
+  async bulkImportGroups(jobId: number, groups: PontoImportGroup[]) {
+    const res = await http.post<{ data: PontoImportResult }>(
+      `/jobs/${jobId}/pontos-ftx/bulk-import`, { groups }
     );
     return res.data.data;
   },
@@ -410,66 +522,61 @@ export const pontosFtxApi = {
   },
 };
 
-// ─── Comparativo por categoria (Relatório 2) ──────────────────────────────────
+// ─── Pontos ADM IPI (valores mensais por job, 1 arquivo = 1 ponto, sem split) ─
+// O ponto (credit_point_definition_id) já vem RESOLVIDO pelo wizard — o
+// usuário confirmou o match ou escolheu manualmente. Ver IpiIrCsllWizards.tsx.
 
-export const ftxCategoriaApi = {
+export interface IpiImportResult {
+  inserted: number;
+  pointName: string;
+}
+
+export const pontosIpiApi = {
   async list(jobId: number) {
-    const res = await http.get<{ data: Record<string, unknown>[] }>(`/jobs/${jobId}/ftx-categoria`);
+    const res = await http.get<{ data: Record<string, unknown>[] }>(`/jobs/${jobId}/pontos-ipi`);
     return res.data.data;
   },
-  async bulkImport(jobId: number, rows: ParsedCategoriaRow[]) {
-    const res = await http.post<{ data: { inserted: number } }>(`/jobs/${jobId}/ftx-categoria/bulk-import`, { rows });
+  async bulkImport(jobId: number, creditPointDefinitionId: number, rows: ParsedIpiMonthlyRow[]) {
+    const res = await http.post<{ data: IpiImportResult }>(
+      `/jobs/${jobId}/pontos-ipi/bulk-import`,
+      { credit_point_definition_id: creditPointDefinitionId, rows }
+    );
     return res.data.data;
   },
   async clearAll(jobId: number) {
-    const res = await http.delete<{ data: { deleted: number } }>(`/jobs/${jobId}/ftx-categoria`);
+    const res = await http.delete<{ data: { deleted: number } }>(`/jobs/${jobId}/pontos-ipi`);
     return res.data.data;
   },
 };
 
-// ─── diagnóstico (créditos PIS/COFINS por ponto, ADM/FTX) ─────────────────────
+// ─── Pontos ADM IR/CSLL (valores anuais por job, 1 arquivo = N pontos) ───────
+// Cada linha já vem com o ponto RESOLVIDO (credit_point_definition_id) —
+// ver IpiIrCsllWizards.tsx.
 
-export type DiagnosticCategory = "ADM" | "FTX";
-
-export interface DiagnosticPointSummary {
+export interface IrCsllValueRow {
   credit_point_definition_id: number;
-  external_id: string;
-  name: string;
-  pis_total: number;
-  cofins_total: number;
-  total: number;
-  risk_color: "VERDE" | "AMARELO" | "VERMELHO" | null;
-  observations: string | null;
+  reference_year: number;
+  tax_sub_type: "IRPJ" | "CSLL";
+  value: number;
 }
 
-export interface DiagnosticMonthlyRow {
-  reference_month: string;
-  pis_value: number;
-  cofins_value: number;
+export interface IrCsllImportResult {
+  inserted: number;
 }
 
-export const diagnosticsApi = {
-  async listPoints(jobId: number, category: DiagnosticCategory): Promise<DiagnosticPointSummary[]> {
-    const res = await http.get<{ data: DiagnosticPointSummary[] }>(
-      `/jobs/${jobId}/diagnostics/points?category=${category}`
+export const pontosIrCsllApi = {
+  async list(jobId: number) {
+    const res = await http.get<{ data: Record<string, unknown>[] }>(`/jobs/${jobId}/pontos-ir-csll`);
+    return res.data.data;
+  },
+  async bulkImport(jobId: number, rows: IrCsllValueRow[]) {
+    const res = await http.post<{ data: IrCsllImportResult }>(
+      `/jobs/${jobId}/pontos-ir-csll/bulk-import`, { rows }
     );
     return res.data.data;
   },
-  async getMonthly(
-    jobId: number, creditPointDefinitionId: number, category: DiagnosticCategory
-  ): Promise<DiagnosticMonthlyRow[]> {
-    const res = await http.get<{ data: DiagnosticMonthlyRow[] }>(
-      `/jobs/${jobId}/diagnostics/points/${creditPointDefinitionId}/monthly?category=${category}`
-    );
-    return res.data.data;
-  },
-  async updateNote(
-    jobId: number, creditPointDefinitionId: number,
-    data: { risk_color?: "VERDE" | "AMARELO" | "VERMELHO" | null; observations?: string | null }
-  ) {
-    const res = await http.put<{ data: unknown }>(
-      `/jobs/${jobId}/diagnostics/points/${creditPointDefinitionId}`, data
-    );
+  async clearAll(jobId: number) {
+    const res = await http.delete<{ data: { deleted: number } }>(`/jobs/${jobId}/pontos-ir-csll`);
     return res.data.data;
   },
 };

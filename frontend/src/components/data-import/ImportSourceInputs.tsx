@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { UploadCloud, FileSpreadsheet, X, ClipboardPaste } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 
-// ─── Single file dropzone (fluxo individual: Categoria, Ponto, Identificação) ─
+// ─── Single file dropzone (fluxo individual: Ponto, Identificação, Definições, IR/CSLL) ─
 
 export function FileDropzone({ onFile }: { onFile: (file: File) => void }) {
   const [dragging, setDragging] = useState(false);
@@ -24,7 +24,12 @@ export function FileDropzone({ onFile }: { onFile: (file: File) => void }) {
         dragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"
       }`}
     >
-      <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => handleFiles(e.target.files)} />
+      <input
+        type="file"
+        accept=".xlsx,.xls,.xlsm,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12,application/vnd.ms-excel"
+        className="hidden"
+        onChange={(e) => handleFiles(e.target.files)}
+      />
       {fileName ? (
         <>
           <FileSpreadsheet className="h-8 w-8 text-primary" />
@@ -35,14 +40,14 @@ export function FileDropzone({ onFile }: { onFile: (file: File) => void }) {
         <>
           <UploadCloud className="h-8 w-8 text-muted-foreground" />
           <p className="text-sm font-medium">Arraste a planilha aqui ou clique para selecionar</p>
-          <p className="text-xs text-muted-foreground">.xlsx, .xls ou .csv</p>
+          <p className="text-xs text-muted-foreground">.xlsx, .xlsm, .xls ou .csv</p>
         </>
       )}
     </label>
   );
 }
 
-// ─── Multi file dropzone (fluxo em lote: Pontos ADM/FTX) ───────────────────
+// ─── Multi file dropzone (fluxo em lote: Pontos ADM/FTX, Pontos IPI) ───────
 
 export function MultiFileDropzone({
   files, onFilesChange,
@@ -83,14 +88,14 @@ export function MultiFileDropzone({
       >
         <input
           type="file"
-          accept=".xlsx,.xls"
+          accept=".xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12,application/vnd.ms-excel"
           multiple
           className="hidden"
           onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
         />
         <UploadCloud className="h-8 w-8 text-muted-foreground" />
         <p className="text-sm font-medium">Arraste várias planilhas aqui ou clique para selecionar</p>
-        <p className="text-xs text-muted-foreground">.xlsx ou .xls — uma tabela (ID_PONTO) por arquivo</p>
+        <p className="text-xs text-muted-foreground">.xlsx, .xlsm ou .xls — uma tabela (ID_PONTO) por arquivo</p>
       </label>
 
       {files.length > 0 && (

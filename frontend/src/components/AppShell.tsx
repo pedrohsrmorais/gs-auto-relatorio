@@ -1,7 +1,7 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useState } from "react";
 import {
-  Briefcase, Users, ListChecks, Bell, ChevronDown, LogOut, Menu, X,
+  Briefcase, Users, ListChecks, Bell, ChevronDown, LogOut, Menu, X, Building2, Tags,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 
@@ -13,11 +13,12 @@ interface NavItem {
 
 const MAIN_NAV: NavItem[] = [
   { label: "Jobs", to: "/jobs", icon: <Briefcase className="h-4 w-4" /> },
+  { label: "Clientes", to: "/clientes", icon: <Building2 className="h-4 w-4" /> },
 ];
 
 const ADMIN_NAV: NavItem[] = [
   { label: "Usuários", to: "/admin/usuarios", icon: <Users className="h-4 w-4" /> },
-  { label: "Pontos de crédito", to: "/admin/pontos-de-credito", icon: <ListChecks className="h-4 w-4" /> },
+  { label: "Pontos", to: "/admin/pontos", icon: <Tags className="h-4 w-4" /> },
 ];
 
 export function Avatar({ initials, size = 40 }: { initials: string; size?: number }) {

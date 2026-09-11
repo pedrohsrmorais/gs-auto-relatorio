@@ -1,15 +1,19 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Search } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { Search, Trash2 } from "lucide-react";
 import { jobsApi } from "@/lib/api";
-import type { JobStatus } from "@/lib/types";
+import type { Job, JobStatus } from "@/lib/types";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
+import { useAuth } from "@/lib/auth";
 import { NewJobDialog } from "@/components/NewJobDialog";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Card } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 
 export const Route = createFileRoute("/jobs/")({
   component: () => (
@@ -38,12 +42,26 @@ const STATUS_VARIANT: Record<JobStatus, "muted" | "default" | "warning" | "succe
 };
 
 function JobsListPage() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<JobStatus | "">("");
+  const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
+  const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery({
     queryKey: ["jobs", search, status],
     queryFn: () => jobsApi.list({ search: search || undefined, status: status || undefined, limit: 50 }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => jobsApi.remove(id),
+    onSuccess: () => {
+      toast.success("Job excluído.");
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      setDeleteTarget(null);
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Erro ao excluir job."),
   });
 
   return (
@@ -85,24 +103,56 @@ function JobsListPage() {
 
       <div className="grid gap-3">
         {data?.data.map((job) => (
-          <Link key={job.id} to="/jobs/$jobId" params={{ jobId: String(job.id) }}>
-            <Card className="p-4 flex items-center justify-between hover:border-primary/40 transition-colors">
-              <div className="min-w-0">
-                <p className="font-medium truncate">{job.job_number}</p>
-                <p className="text-sm text-muted-foreground truncate">
-                  {job.company_name} · {job.cnpj}
-                </p>
-              </div>
-              <div className="flex items-center gap-3 shrink-0">
-                <span className="text-xs text-muted-foreground hidden sm:inline">
-                  {job.period_start} — {job.period_end}
-                </span>
-                <Badge variant={STATUS_VARIANT[job.status]}>{STATUS_LABEL[job.status]}</Badge>
-              </div>
-            </Card>
-          </Link>
+          <div key={job.id} className="relative">
+            <Link to="/jobs/$jobId" params={{ jobId: String(job.id) }}>
+              <Card className={`p-4 flex items-center justify-between hover:border-primary/40 transition-colors ${isAdmin ? "pr-14" : ""}`}>
+                <div className="min-w-0">
+                  <p className="font-medium truncate">{job.job_number}</p>
+                  <p className="text-sm text-muted-foreground truncate">
+                    {job.company_name} · {job.cnpj}
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-xs text-muted-foreground hidden sm:inline">
+                    {job.period_start} — {job.period_end}
+                  </span>
+                  <Badge variant={STATUS_VARIANT[job.status]}>{STATUS_LABEL[job.status]}</Badge>
+                </div>
+              </Card>
+            </Link>
+            {isAdmin && (
+              <Button
+                variant="ghost" size="icon"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                onClick={() => setDeleteTarget(job)}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
         ))}
       </div>
+
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Excluir job "{deleteTarget?.job_number}"?</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Isso apaga permanentemente todos os dados deste job: PER/DCOMP, DARF, SPED, valores de pontos
+            ADM/FTX, observações do diagnóstico, equipe e pareceres. Não afeta o cadastro do cliente
+            nem o catálogo global de pontos.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>Cancelar</Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? "Excluindo…" : "Sim, excluir"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

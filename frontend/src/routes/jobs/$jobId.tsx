@@ -1,18 +1,26 @@
+//routes/jobs/$jobId.tsx
+
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { CheckCircle2, Circle, ClipboardList, Building2, UploadCloud } from "lucide-react";
-import { jobsApi, taxesApi, creditPointsApi, jobCreditAnalysisApi } from "@/lib/api";
+import {
+  jobsApi, perdcompApi, darfApi, spedM400Api, spedM610Api, pontosAdmApi, pontosFtxApi, diagnosticsApi,
+} from "@/lib/api";
 import type { JobStatus } from "@/lib/types";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { ColetaPanel } from "@/components/job-wizard/ColetaPanel";
 import { DiagnosticoPanel } from "@/components/job-wizard/DiagnosticoPanel";
-import { TributoPanel } from "@/components/job-wizard/TributoPanel";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+
+// NOTA: a navegação por tributo (aba "por tributo" com fila de revisão
+// sequencial, TributoPanel/RevisaoPonto, taxesApi/creditPointsApi/
+// jobCreditAnalysisApi) foi removida — era o fluxo antigo ("Sistema B"),
+// já substituído pelo Diagnóstico por ponto (ADM/FTX) abaixo.
 
 export const Route = createFileRoute("/jobs/$jobId")({
   component: () => (
@@ -108,38 +116,52 @@ function OverviewPanel({ jobId }: { jobId: number }) {
   );
 }
 
+// ─── Progresso geral do job (Coleta de Dados + Diagnóstico) ─────────────────
+// Usa as MESMAS queryKeys que ColetaPanel/DiagnosticoPanel já usam, então o
+// react-query reaproveita o cache em vez de duplicar as chamadas de rede.
+
+function useJobProgress(jobId: number) {
+  const sourceQueries = useQueries({
+    queries: [
+      { queryKey: ["perdcomps", jobId], queryFn: () => perdcompApi.list(jobId) },
+      { queryKey: ["darf-entries", jobId], queryFn: () => darfApi.list(jobId) },
+      { queryKey: ["sped-m400", jobId], queryFn: () => spedM400Api.list(jobId) },
+      { queryKey: ["sped-m610", jobId], queryFn: () => spedM610Api.list(jobId) },
+      { queryKey: ["pontos-adm", jobId], queryFn: () => pontosAdmApi.list(jobId) },
+      { queryKey: ["pontos-ftx", jobId], queryFn: () => pontosFtxApi.list(jobId) },
+    ],
+  });
+
+  const { data: admPoints = [] } = useQuery({
+    queryKey: ["diagnostic-points", jobId, "ADM"],
+    queryFn: () => diagnosticsApi.listPoints(jobId, "ADM"),
+  });
+  const { data: ftxPoints = [] } = useQuery({
+    queryKey: ["diagnostic-points", jobId, "FTX"],
+    queryFn: () => diagnosticsApi.listPoints(jobId, "FTX"),
+  });
+
+  const importedSourcesCount = sourceQueries.filter((q) => (q.data?.length ?? 0) > 0).length;
+  const coletaPct = Math.round((importedSourcesCount / sourceQueries.length) * 100);
+
+  const allPoints = [...admPoints, ...ftxPoints];
+  const reviewedPoints = allPoints.filter((p) => (p.observations ?? "").trim().length > 0).length;
+  const diagnosticoPct = allPoints.length ? Math.round((reviewedPoints / allPoints.length) * 100) : 0;
+
+  const overallPct = Math.round((coletaPct + diagnosticoPct) / 2);
+
+  return { coletaPct, diagnosticoPct, overallPct };
+}
+
 function JobWizardPage() {
   const { jobId: jobIdParam } = Route.useParams();
   const jobId = Number(jobIdParam);
 
-  const [section, setSection] = useState<string>("overview");
+  const [section, setSection] = useState<"overview" | "coleta" | "diagnostico">("overview");
 
   const { data: job } = useQuery({ queryKey: ["job", jobId], queryFn: () => jobsApi.get(jobId) });
-  const { data: taxes = [] } = useQuery({ queryKey: ["taxes"], queryFn: taxesApi.list });
-  const { data: creditPointsPage } = useQuery({
-    queryKey: ["credit-points-all"],
-    queryFn: () => creditPointsApi.list({ is_active: true, limit: 200 }),
-  });
-  const { data: analyses = [] } = useQuery({
-    queryKey: ["job-credit-analyses", jobId],
-    queryFn: () => jobCreditAnalysisApi.list(jobId, {}),
-  });
 
-  const creditPoints = useMemo(() => creditPointsPage?.data ?? [], [creditPointsPage]);
-
-  const creditPointsByTax = useMemo(() => {
-    const map = new Map<number, typeof creditPoints>();
-    for (const cp of creditPoints) {
-      const list = map.get(cp.tax_id) ?? [];
-      list.push(cp);
-      map.set(cp.tax_id, list);
-    }
-    return map;
-  }, [creditPoints]);
-
-  const overallReviewed = analyses.length;
-  const overallTotal = creditPoints.length;
-  const overallPct = overallTotal ? Math.round((overallReviewed / overallTotal) * 100) : 0;
+  const { coletaPct, diagnosticoPct, overallPct } = useJobProgress(jobId);
 
   if (!job) return <p className="text-sm text-muted-foreground">Carregando job…</p>;
 
@@ -150,10 +172,11 @@ function JobWizardPage() {
         <h1 className="text-2xl font-display font-semibold">{job.company_name}</h1>
         <div className="flex items-center gap-3 mt-2 max-w-md">
           <Progress value={overallPct} className="flex-1" />
-          <span className="text-sm text-muted-foreground shrink-0">
-            {overallReviewed}/{overallTotal} pontos · {overallPct}%
-          </span>
+          <span className="text-sm text-muted-foreground shrink-0">{overallPct}% concluído</span>
         </div>
+        <p className="text-xs text-muted-foreground mt-1">
+          Coleta de Dados: {coletaPct}% · Diagnóstico: {diagnosticoPct}%
+        </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-6">
@@ -164,47 +187,24 @@ function JobWizardPage() {
           />
           <SectionLink
             active={section === "coleta"} onClick={() => setSection("coleta")}
-            icon={<UploadCloud className="h-4 w-4" />} label="Coleta de Dados"
+            icon={coletaPct === 100 ? <CheckCircle2 className="h-4 w-4 text-success" /> : <UploadCloud className="h-4 w-4" />}
+            label="Coleta de Dados"
+            sublabel={`${coletaPct}%`}
+            done={coletaPct === 100}
           />
           <SectionLink
             active={section === "diagnostico"} onClick={() => setSection("diagnostico")}
-            icon={<Circle className="h-4 w-4" />}
+            icon={diagnosticoPct === 100 ? <CheckCircle2 className="h-4 w-4 text-success" /> : <Circle className="h-4 w-4" />}
             label="Diagnóstico"
+            sublabel={`${diagnosticoPct}%`}
+            done={diagnosticoPct === 100}
           />
-          {taxes.map((tax) => {
-            const points = creditPointsByTax.get(tax.id) ?? [];
-            const reviewed = analyses.filter((a) => a.tax_code === tax.code).length;
-            const complete = points.length > 0 && reviewed === points.length;
-            return (
-              <SectionLink
-                key={tax.id}
-                active={section === `tax-${tax.id}`}
-                onClick={() => setSection(`tax-${tax.id}`)}
-                icon={complete ? <CheckCircle2 className="h-4 w-4 text-success" /> : <Circle className="h-4 w-4" />}
-                label={tax.name}
-                sublabel={`${reviewed}/${points.length}`}
-                done={complete}
-              />
-            );
-          })}
         </nav>
 
         <div>
           {section === "overview" && <OverviewPanel jobId={jobId} />}
           {section === "coleta" && <ColetaPanel jobId={jobId} />}
           {section === "diagnostico" && <DiagnosticoPanel jobId={jobId} />}
-          {taxes.map((tax) =>
-            section === `tax-${tax.id}` ? (
-              <TributoPanel
-                key={tax.id}
-                jobId={jobId}
-                tax={tax}
-                creditPoints={creditPointsByTax.get(tax.id) ?? []}
-                analyses={analyses}
-                periodStart={job.period_start}
-              />
-            ) : null
-          )}
         </div>
       </div>
     </div>

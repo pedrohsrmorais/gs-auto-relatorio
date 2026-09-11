@@ -237,7 +237,34 @@ async function updateDetails(req, res, next) {
   }
 }
 
+
+// adicionar no fim, antes do module.exports
+
+async function remove(req, res, next) {
+  try {
+    const { id } = req.params;
+    const [rows] = await pool.query(`SELECT id, job_number FROM jobs WHERE id = ?`, [id]);
+    if (!rows[0]) throw new ApiError(404, 'Job não encontrado.');
+
+    // Loga ANTES de apagar, com jobId: null — se logasse depois referenciando
+    // o job_id, e audit_logs.job_id tiver ON DELETE CASCADE, o próprio
+    // registro de auditoria da exclusão sumiria junto com o job.
+    await logAction(req, {
+      action: 'JOB_DELETED', entityType: 'job', entityId: Number(id), jobId: null,
+      details: { job_number: rows[0].job_number },
+    });
+
+    // ON DELETE CASCADE cuida de perdcomps, darf, sped m400/m610,
+    // pontos_adm/ftx, job_point_notes, job_team_members e job_reports.
+    await pool.query(`DELETE FROM jobs WHERE id = ?`, [id]);
+
+    res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   list, get, create, updateStatus, updateDetails,
-  setTeamMember, removeTeamMember,
+  setTeamMember, removeTeamMember, remove,
 };

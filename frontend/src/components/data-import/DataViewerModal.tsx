@@ -176,7 +176,7 @@ export function DataViewerModal<T extends Record<string, unknown>>({
   );
 }
 
-// ─── Modal de visualização genérico (Pontos ADM/FTX, Comparativo Categoria) ─
+// ─── Modal de visualização genérico (Pontos ADM/FTX) ────────────────────────
 
 export function GenericDataViewerModal({
   title, queryKey, fetcher, columns,

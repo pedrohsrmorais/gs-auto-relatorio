@@ -1,3 +1,5 @@
+//components/job-wizard/ColetaPanel.tsx
+
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -7,13 +9,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import {
-  perdcompApi, darfApi, spedM400Api, spedM610Api, pontosAdmApi, pontosFtxApi, ftxCategoriaApi,
+  perdcompApi, darfApi, spedM400Api, spedM610Api, pontosAdmApi, pontosFtxApi, pontosIpiApi, pontosIrCsllApi,
 } from "@/lib/api";
-import { ImportWizard, PontoImportWizard, PontoMultiImportWizard, CategoriaImportWizard } from "@/components/data-import/ImportWizards";
+import { ImportWizard, PontoImportWizard, PontoMultiImportWizard } from "@/components/data-import/ImportWizards";
+import { IpiPontoImportWizard, IpiMultiImportWizard, IrCsllImportWizard } from "@/components/data-import/IpiIrCsllWizards";
 import { DataViewerModal, GenericDataViewerModal } from "@/components/data-import/DataViewerModal";
 import { PERDCOMP_CONFIG, DARF_CONFIG, M400_CONFIG, M610_CONFIG } from "@/lib/import/importConfigs";
 import type { ImportTableConfig } from "@/lib/import/importConfigs";
-import type { ParsedPontoMonthlyRow } from "@/lib/import/pontoMatrixParser";
+import type { ParsedPontoMonthlyRow } from "@/lib/import/customParsers";
+import type { IrCsllResolvedRow } from "@/components/data-import/IpiIrCsllWizards";
 
 const PONTO_VIEW_COLUMNS = [
   { key: "point_name", label: "Ponto" },
@@ -22,11 +26,16 @@ const PONTO_VIEW_COLUMNS = [
   { key: "value", label: "Valor" },
 ];
 
-const CATEGORIA_VIEW_COLUMNS = [
-  { key: "risk_color", label: "Cor" },
-  { key: "tax_name", label: "Tributo" },
+const IPI_VIEW_COLUMNS = [
+  { key: "point_name", label: "Ponto" },
+  { key: "reference_month", label: "Mês" },
+  { key: "value", label: "Valor" },
+];
+
+const IRCSLL_VIEW_COLUMNS = [
   { key: "point_name", label: "Ponto" },
   { key: "reference_year", label: "Ano" },
+  { key: "tax_sub_type", label: "IRPJ/CSLL" },
   { key: "value", label: "Valor" },
 ];
 
@@ -142,7 +151,7 @@ function SourceCard({ jobId, source }: { jobId: number; source: SourceDef }) {
   );
 }
 
-// ─── Cards de Pontos (ADM / FTX) ────────────────────────────────────────────
+// ─── Cards de Pontos ADM / FTX (PIS/COFINS, matriz com ID_PONTO) ────────────
 
 function PontoCard({
   jobId, category, title, description, api,
@@ -201,6 +210,10 @@ function PontoCard({
             </Button>
           )}
         </div>
+        <p className="text-xs text-muted-foreground">
+          Nome{category === "FTX" && " e cor"} de cada ponto vêm do catálogo global (Administração → Pontos).
+          Se o ID_PONTO já existir na plataforma, os valores deste job são associados a ele automaticamente.
+        </p>
       </CardContent>
 
       <PontoImportWizard
@@ -244,19 +257,22 @@ function PontoCard({
   );
 }
 
-// ─── Card do Comparativo por Categoria (Relatório 2) ───────────────────────
+// ─── Card de Pontos ADM IPI (sem ID_PONTO — casa por nome) ─────────────────
 
-function CategoriaCard({ jobId }: { jobId: number }) {
+function IpiCard({ jobId }: { jobId: number }) {
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [multiWizardOpen, setMultiWizardOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const queryClient = useQueryClient();
-  const queryKey = ["ftx-categoria", jobId];
-  const { data = [] } = useQuery({ queryKey, queryFn: () => ftxCategoriaApi.list(jobId) });
+  const queryKey = ["pontos-ipi", jobId];
+  const { data = [] } = useQuery({ queryKey, queryFn: () => pontosIpiApi.list(jobId) });
+
+  const distinctPoints = new Set(data.map((r) => r.point_name)).size;
 
   const clearMutation = useMutation({
-    mutationFn: () => ftxCategoriaApi.clearAll(jobId),
+    mutationFn: () => pontosIpiApi.clearAll(jobId),
     onSuccess: (res) => {
-      toast.success(`${res.deleted} registro(s) removido(s).`);
+      toast.success(`${res.deleted} valor(es) removido(s).`);
       queryClient.invalidateQueries({ queryKey });
       setConfirmOpen(false);
     },
@@ -268,43 +284,138 @@ function CategoriaCard({ jobId }: { jobId: number }) {
       <CardContent className="p-5 space-y-3">
         <div className="flex items-start justify-between">
           <div>
-            <p className="font-medium">Comparativo por Categoria (Relatório 2)</p>
-            <p className="text-sm text-muted-foreground">PIS/COFINS por cor de risco (verde/amarelo/vermelho), ano a ano.</p>
+            <p className="font-medium">Importar pontos ADM IPI</p>
+            <p className="text-sm text-muted-foreground">Valores mensais de crédito de IPI por ponto (sem separação PIS/COFINS).</p>
           </div>
-          <Badge variant={data.length > 0 ? "success" : "muted"}>{data.length} registro{data.length === 1 ? "" : "s"}</Badge>
+          <Badge variant={data.length > 0 ? "success" : "muted"}>
+            {distinctPoints} ponto{distinctPoints === 1 ? "" : "s"} · {data.length} valor(es)
+          </Badge>
         </div>
         <div className="flex items-center gap-2 pt-1 flex-wrap">
-          <Button size="sm" onClick={() => setWizardOpen(true)}><FileUp className="h-4 w-4" /> Importar dados</Button>
-          <GenericDataViewerModal
-            title="Comparativo por Categoria"
-            queryKey={queryKey}
-            fetcher={() => ftxCategoriaApi.list(jobId)}
-            columns={CATEGORIA_VIEW_COLUMNS}
-          />
+          <Button size="sm" onClick={() => setWizardOpen(true)}><FileUp className="h-4 w-4" /> Importar ponto</Button>
+          <Button size="sm" variant="outline" onClick={() => setMultiWizardOpen(true)}>
+            <FileUp className="h-4 w-4" /> Importar vários pontos
+          </Button>
+          <GenericDataViewerModal title="Pontos ADM IPI" queryKey={queryKey} fetcher={() => pontosIpiApi.list(jobId)} columns={IPI_VIEW_COLUMNS} />
           {data.length > 0 && (
             <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive hover:bg-destructive/10"
               onClick={() => setConfirmOpen(true)}>
-              <Trash2 className="h-4 w-4" /> Desimportar
+              <Trash2 className="h-4 w-4" /> Desimportar tudo
             </Button>
           )}
         </div>
+        <p className="text-xs text-muted-foreground">
+          A planilha de IPI não traz ID_PONTO — o nome do ponto vem do título da aba "Comparativo" e é casado
+          com o catálogo global de pontos IPI (Administração → Pontos).
+        </p>
       </CardContent>
 
-      <CategoriaImportWizard
+      <IpiPontoImportWizard
         open={wizardOpen}
         onOpenChange={setWizardOpen}
-        onCommit={async (rows) => {
-          const res = await ftxCategoriaApi.bulkImport(jobId, rows);
+        onCommit={async (pointId, pointName, rows) => {
+          const res = await pontosIpiApi.bulkImport(jobId, pointId, rows);
           queryClient.invalidateQueries({ queryKey });
+          queryClient.invalidateQueries({ queryKey: ["point-definitions"] });
+          return res;
+        }}
+      />
+      <IpiMultiImportWizard
+        open={multiWizardOpen}
+        onOpenChange={setMultiWizardOpen}
+        onCommit={async (pointId, pointName, rows) => {
+          const res = await pontosIpiApi.bulkImport(jobId, pointId, rows);
+          queryClient.invalidateQueries({ queryKey });
+          queryClient.invalidateQueries({ queryKey: ["point-definitions"] });
           return res;
         }}
       />
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Desimportar Comparativo por Categoria?</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Desimportar Pontos ADM IPI?</DialogTitle></DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Remove permanentemente os {data.length} registro(s) já importados. Ação registrada no histórico de auditoria.
+            Remove permanentemente todos os {data.length} valor(es) mensais de {distinctPoints} ponto(s) de IPI
+            para este job. Ação registrada no histórico de auditoria.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancelar</Button>
+            <Button variant="destructive" onClick={() => clearMutation.mutate()} disabled={clearMutation.isPending}>
+              {clearMutation.isPending ? "Removendo…" : "Sim, desimportar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
+  );
+}
+
+// ─── Card de Pontos IR/CSLL (1 arquivo = N pontos, anual) ──────────────────
+
+function IrCsllCard({ jobId }: { jobId: number }) {
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const queryClient = useQueryClient();
+  const queryKey = ["pontos-ir-csll", jobId];
+  const { data = [] } = useQuery({ queryKey, queryFn: () => pontosIrCsllApi.list(jobId) });
+
+  const distinctPoints = new Set(data.map((r) => r.point_name)).size;
+
+  const clearMutation = useMutation({
+    mutationFn: () => pontosIrCsllApi.clearAll(jobId),
+    onSuccess: (res) => {
+      toast.success(`${res.deleted} valor(es) removido(s).`);
+      queryClient.invalidateQueries({ queryKey });
+      setConfirmOpen(false);
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Erro ao desimportar."),
+  });
+
+  return (
+    <Card>
+      <CardContent className="p-5 space-y-3">
+        <div className="flex items-start justify-between">
+          <div>
+            <p className="font-medium">Importar Pontos IR/CSLL</p>
+            <p className="text-sm text-muted-foreground">Valores anuais de crédito de IRPJ/CSLL, por ponto — um único arquivo cobre todos os pontos do job.</p>
+          </div>
+          <Badge variant={data.length > 0 ? "success" : "muted"}>
+            {distinctPoints} ponto{distinctPoints === 1 ? "" : "s"} · {data.length} valor(es)
+          </Badge>
+        </div>
+        <div className="flex items-center gap-2 pt-1 flex-wrap">
+          <Button size="sm" onClick={() => setWizardOpen(true)}><FileUp className="h-4 w-4" /> Importar planilha</Button>
+          <GenericDataViewerModal title="Pontos IR/CSLL" queryKey={queryKey} fetcher={() => pontosIrCsllApi.list(jobId)} columns={IRCSLL_VIEW_COLUMNS} />
+          {data.length > 0 && (
+            <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive hover:bg-destructive/10"
+              onClick={() => setConfirmOpen(true)}>
+              <Trash2 className="h-4 w-4" /> Desimportar tudo
+            </Button>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Os pontos são lidos da aba "Totais" da planilha de IR/CSLL do job e casados com o catálogo global
+          (Administração → Pontos) pelo nome.
+        </p>
+      </CardContent>
+
+      <IrCsllImportWizard
+        open={wizardOpen}
+        onOpenChange={setWizardOpen}
+        onCommit={async (rows: IrCsllResolvedRow[]) => {
+          const res = await pontosIrCsllApi.bulkImport(jobId, rows);
+          queryClient.invalidateQueries({ queryKey });
+          queryClient.invalidateQueries({ queryKey: ["point-definitions"] });
+          return res;
+        }}
+      />
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Desimportar Pontos IR/CSLL?</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Remove permanentemente todos os {data.length} valor(es) anuais de {distinctPoints} ponto(s) de
+            IRPJ/CSLL para este job. Ação registrada no histórico de auditoria.
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancelar</Button>
@@ -335,30 +446,36 @@ export function ColetaPanel({ jobId }: { jobId: number }) {
       </div>
 
       <div>
-        <p className="text-sm font-medium">Pontos de crédito</p>
+        <p className="text-sm font-medium">Pontos de crédito — PIS/COFINS</p>
         <p className="text-sm text-muted-foreground">
           Cada importação corresponde a um único ponto (identificado pelo ID_PONTO da planilha de origem).
-          Se o ID já existir no sistema, os valores são atualizados; caso contrário, um novo ponto é criado.
+          Se o ID já existir na plataforma, os valores deste job são anexados a ele; caso contrário, um novo
+          ponto é criado sem nome/cor — que pode ser preenchido em Administração → Pontos.
         </p>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <PontoCard
-          jobId={jobId} category="ADM" title="Pontos ADM"
+          jobId={jobId} category="ADM" title="Pontos ADM PIS/COFINS"
           description="Valores mensais de PIS/COFINS por ponto administrativo."
           api={pontosAdmApi}
         />
         <PontoCard
-          jobId={jobId} category="FTX" title="Pontos FTX"
-          description="Valores mensais de PIS/COFINS por ponto FINTAX."
+          jobId={jobId} category="FTX" title="Pontos FTX PIS/COFINS"
+          description="Valores mensais de PIS/COFINS por ponto FINTAX, com cor de risco."
           api={pontosFtxApi}
         />
       </div>
 
       <div>
-        <p className="text-sm font-medium">Comparativo</p>
+        <p className="text-sm font-medium">Pontos de crédito — outros tributos</p>
+        <p className="text-sm text-muted-foreground">
+          IPI e IR/CSLL usam o mesmo catálogo global de pontos (Administração → Pontos), mas com formatos de
+          planilha e periodicidade próprios (IPI é mensal sem split; IR/CSLL é anual com split IRPJ/CSLL).
+        </p>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
-        <CategoriaCard jobId={jobId} />
+        <IpiCard jobId={jobId} />
+        <IrCsllCard jobId={jobId} />
       </div>
     </div>
   );

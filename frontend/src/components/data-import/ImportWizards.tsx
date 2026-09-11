@@ -21,9 +21,24 @@ import {
 } from "@/lib/import/parseUtils";
 import type { ImportPreviewResult, ImportTableConfig } from "@/lib/import/importConfigs";
 
-import { parsePontoMatrix, type ParsedPontoMonthlyRow, type ParsePontoMatrixResult } from "@/lib/import/pontoMatrixParser";
-import { parseCategoriaGrid, type ParsedCategoriaRow } from "@/lib/import/categoriaParser";
-import { parseJobIdentification, type ParsedJobIdentification } from "@/lib/import/identificationParser";
+import {
+  parsePontoMatrix, type ParsedPontoMonthlyRow, type ParsePontoMatrixResult,
+  parseJobIdentification, type ParsedJobIdentification,
+} from "@/lib/import/customParsers";
+import { creditPointDefinitionsApi, type DefinitionImportRow, type TaxCode, type PointNature } from "@/lib/api";
+
+/* =====================================================================
+ * ImportWizards.tsx
+ *
+ *  - ImportWizard              → PERDCOMP / DARF / SPED M400 / SPED M610
+ *  - PontoImportWizard          → 1 arquivo/paste = 1 ponto (ADM ou FTX)
+ *  - PontoMultiImportWizard     → N arquivos = N pontos, em lote
+ *  - IdentificationImportModal  → identificação do job (Relatório 1)
+ *  - DefinitionsImportWizard    → tabela mestre de pontos (catálogo global
+ *                                 credit_point_definitions — nome, cor E
+ *                                 tributo/natureza, lidos POR LINHA da
+ *                                 coluna NOME TRIBUTO quando ela existir).
+ * ===================================================================== */
 
 // ═════════════════════════════════════════════════════════════════════════
 // Compartilhado entre os wizards
@@ -77,6 +92,9 @@ export function ImportWizard({
 }) {
   const [step, setStep] = useState<ImportStep>("method");
   const [method, setMethod] = useState<SourceMethod | null>(null);
+
+  const [headerRow, setHeaderRow] = useState<number>(config.defaultHeaderRow ?? 1);
+
   const [headers, setHeaders] = useState<string[]>([]);
   const [rawRows, setRawRows] = useState<string[][]>([]);
   const [mapping, setMapping] = useState<Record<string, number | null>>({});
@@ -86,7 +104,9 @@ export function ImportWizard({
   const [result, setResult] = useState<{ inserted: number } | null>(null);
 
   function reset() {
-    setStep("method"); setMethod(null); setHeaders([]); setRawRows([]);
+    setStep("method"); setMethod(null);
+    setHeaderRow(config.defaultHeaderRow ?? 1);
+    setHeaders([]); setRawRows([]);
     setMapping({}); setMapByOrder(false); setPreview(null); setResult(null);
   }
 
@@ -105,7 +125,10 @@ export function ImportWizard({
 
   async function handleFile(file: File) {
     try {
-      const { headers: h, rows } = await parseXlsxFile(file);
+      const { headers: h, rows } = await parseXlsxFile(file, headerRow);
+      if (rows.length === 0) {
+        toast.warning("Nenhuma linha de dado encontrada a partir da linha de cabeçalho selecionada. Verifique a opção acima.");
+      }
       applyParsed(h, rows);
     } catch {
       toast.error("Não foi possível ler o arquivo. Tente colar os dados manualmente.");
@@ -114,7 +137,7 @@ export function ImportWizard({
   }
 
   function handlePasteText(text: string) {
-    const { headers: h, rows } = parsePastedText(text);
+    const { headers: h, rows } = parsePastedText(text, headerRow);
     applyParsed(h, rows);
   }
 
@@ -156,6 +179,7 @@ export function ImportWizard({
   }
 
   const stepIndex = IMPORT_STEP_ORDER.indexOf(step);
+  const showHeaderRowToggle = config.defaultHeaderRow !== undefined && config.defaultHeaderRow > 1;
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -187,6 +211,27 @@ export function ImportWizard({
 
         {step === "source" && (
           <div className="space-y-4 py-2">
+            {showHeaderRowToggle && (
+              <label className="flex items-start gap-3 text-sm border border-border rounded-lg p-3 bg-muted/30 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4"
+                  checked={headerRow === config.defaultHeaderRow}
+                  onChange={(e) => setHeaderRow(e.target.checked ? (config.defaultHeaderRow ?? 8) : 1)}
+                />
+                <span>
+                  <span className="font-medium">Cabeçalho na linha {config.defaultHeaderRow}</span>
+                  <br />
+                  <span className="text-muted-foreground text-xs">
+                    Planilhas exportadas diretamente do sistema trazem um bloco de metadados
+                    (Empresa, Usuário, Data, Cruzamento…) antes das colunas reais. Mantenha
+                    marcado se a planilha seguir esse padrão; desmarque se o cabeçalho já
+                    estiver na primeira linha.
+                  </span>
+                </span>
+              </label>
+            )}
+
             {method === "file" ? <FileDropzone onFile={handleFile} /> : <PasteArea onChangeText={handlePasteText} />}
             {rawRows.length > 0 && (
               <p className="text-sm text-success flex items-center gap-1.5">
@@ -270,131 +315,6 @@ export function ImportWizard({
               <Button onClick={handleCommit} disabled={committing}>
                 {committing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
                 Importar {preview.validRows} registro(s)
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {step === "done" && result && (
-          <div className="flex flex-col items-center gap-3 py-10 text-center">
-            <CheckCircle2 className="h-10 w-10 text-success" />
-            <p className="font-medium">{result.inserted} registro(s) importado(s) com sucesso.</p>
-            <Button onClick={() => handleClose(false)}>Concluir</Button>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// ═════════════════════════════════════════════════════════════════════════
-// CategoriaImportWizard — Comparativo por Categoria (Relatório 2)
-// ═════════════════════════════════════════════════════════════════════════
-
-type CategoriaStep = "method" | "source" | "review" | "done";
-const CATEGORIA_STEP_ORDER: CategoriaStep[] = ["method", "source", "review", "done"];
-const CATEGORIA_STEP_LABEL: Record<CategoriaStep, string> = { method: "Método", source: "Dados", review: "Revisão", done: "Concluído" };
-
-export function CategoriaImportWizard({
-  open, onOpenChange, onCommit,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onCommit: (rows: ParsedCategoriaRow[]) => Promise<{ inserted: number }>;
-}) {
-  const [step, setStep] = useState<CategoriaStep>("method");
-  const [method, setMethod] = useState<SourceMethod | null>(null);
-  const [parsed, setParsed] = useState<{ rows: ParsedCategoriaRow[]; warnings: string[] } | null>(null);
-  const [committing, setCommitting] = useState(false);
-  const [result, setResult] = useState<{ inserted: number } | null>(null);
-
-  function reset() { setStep("method"); setMethod(null); setParsed(null); setResult(null); }
-  function handleClose(next: boolean) { if (!next) reset(); onOpenChange(next); }
-
-  function applyParsed(headers: string[], rows: string[][]) {
-    const res = parseCategoriaGrid(headers, rows);
-    setParsed(res);
-    res.warnings.forEach((w) => toast.warning(w));
-    setStep("review");
-  }
-
-  async function handleFile(file: File) {
-    try {
-      const { headers, rows } = await parseXlsxFile(file);
-      applyParsed(headers, rows);
-    } catch {
-      toast.error("Não foi possível ler o arquivo. Tente colar os dados manualmente.");
-      setMethod("paste");
-    }
-  }
-  function handlePasteText(text: string) {
-    const { headers, rows } = parsePastedText(text);
-    applyParsed(headers, rows);
-  }
-
-  async function handleCommit() {
-    if (!parsed || parsed.rows.length === 0) { toast.error("Nenhum dado válido para importar."); return; }
-    setCommitting(true);
-    try {
-      const res = await onCommit(parsed.rows);
-      setResult(res);
-      setStep("done");
-      toast.success(`${res.inserted} registro(s) importado(s).`);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Erro ao importar.");
-    } finally {
-      setCommitting(false);
-    }
-  }
-
-  const stepIndex = CATEGORIA_STEP_ORDER.indexOf(step);
-
-  return (
-    <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader><DialogTitle>Importar Comparativo por Categoria (Relatório 2)</DialogTitle></DialogHeader>
-
-        <WizardSteps steps={CATEGORIA_STEP_ORDER} labels={CATEGORIA_STEP_LABEL} currentIndex={stepIndex} />
-
-        {step === "method" && (
-          <div className="grid grid-cols-2 gap-4 py-4">
-            <button onClick={() => { setMethod("file"); setStep("source"); }}
-              className="flex flex-col items-center gap-3 border border-border rounded-xl p-8 hover:border-primary/50 hover:bg-muted/50 transition-colors">
-              <FileUp className="h-8 w-8 text-primary" />
-              <p className="font-medium text-sm">Enviar planilha (.xlsx)</p>
-            </button>
-            <button onClick={() => { setMethod("paste"); setStep("source"); }}
-              className="flex flex-col items-center gap-3 border border-border rounded-xl p-8 hover:border-primary/50 hover:bg-muted/50 transition-colors">
-              <PasteIcon className="h-8 w-8 text-primary" />
-              <p className="font-medium text-sm">Colar dados do Excel</p>
-            </button>
-          </div>
-        )}
-
-        {step === "source" && (
-          <div className="space-y-4 py-2">
-            {method === "file" ? <FileDropzone onFile={handleFile} /> : <PasteArea onChangeText={handlePasteText} />}
-            <div className="flex justify-start pt-2">
-              <Button variant="outline" onClick={() => setStep("method")}><ArrowLeft className="h-4 w-4" /> Voltar</Button>
-            </div>
-          </div>
-        )}
-
-        {step === "review" && parsed && (
-          <div className="space-y-4 py-2">
-            <p className="text-sm">
-              <strong>{parsed.rows.length}</strong> registro(s) (cor × tributo × ponto × ano) serão importados.
-            </p>
-            {parsed.warnings.length > 0 && (
-              <ul className="text-xs text-warning space-y-1">
-                {parsed.warnings.map((w, i) => <li key={i}>⚠ {w}</li>)}
-              </ul>
-            )}
-            <div className="flex justify-between pt-2">
-              <Button variant="outline" onClick={() => setStep("source")}><ArrowLeft className="h-4 w-4" /> Voltar</Button>
-              <Button onClick={handleCommit} disabled={committing || parsed.rows.length === 0}>
-                {committing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                Importar {parsed.rows.length} registro(s)
               </Button>
             </div>
           </div>
@@ -959,5 +879,360 @@ function IdentificationField({ label, value }: { label: string; value: string | 
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className="font-medium">{value ?? "— não encontrado —"}</p>
     </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// DefinitionsImportWizard — tabela mestre de pontos (catálogo global)
+//
+// Popula credit_point_definitions em massa a partir da planilha mestre
+// (CÓDIGO PONTO / NOME PONTO / COR / NOME TRIBUTO), para ADM ou FTX.
+//
+// O tributo de cada ponto é lido POR LINHA da coluna NOME TRIBUTO quando
+// ela existir na planilha (é o caso do PRT para ADM e do Fintax para FTX —
+// ambos misturam vários tributos, incluindo variantes "- PASSIVO", no
+// mesmo arquivo). Se a planilha não tiver essa coluna, cai no `taxCode`
+// fixo passado como prop (fallback).
+// ===================================================================== */
+
+function normalizeHeader(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+// Normalização "leve" para nomes de tributo — mantém "/" (ex: "pis/cofins")
+// porque normalizeHeader trocaria por espaço e quebraria o match exato.
+function normalizeTaxName(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const TAX_NAME_MAP: Record<string, TaxCode> = {
+  "icms": "ICMS",
+  "inss": "INSS",
+  "ipi": "IPI",
+  "irpj/csll": "IRPJ_CSLL",
+  "pis/cofins": "PIS_COFINS",
+};
+
+/**
+ * Extrai { taxCode, nature } de um texto de tributo tipo "IPI",
+ * "IRPJ/CSLL - PASSIVO", "PIS/COFINS". Retorna null se não reconhecer —
+ * quem chama deve tratar isso como linha inválida, nunca advinhar.
+ */
+function parseTaxNature(raw: string): { taxCode: TaxCode; nature: PointNature } | null {
+  const norm = normalizeTaxName(raw);
+  const isPassivo = /\s*-\s*passivo$/.test(norm);
+  const base = norm.replace(/\s*-\s*passivo$/, "").trim();
+  const taxCode = TAX_NAME_MAP[base];
+  if (!taxCode) return null;
+  return { taxCode, nature: isPassivo ? "PASSIVO" : "CREDITO" };
+}
+
+const VALID_RISK_COLORS = ["VERDE", "AMARELO", "VERMELHO"];
+
+function detectDefinitionColumns(headers: string[]) {
+  const normalized = headers.map(normalizeHeader);
+  const find = (...candidates: string[]) => {
+    for (const c of candidates) {
+      const idx = normalized.findIndex((h) => h.includes(normalizeHeader(c)));
+      if (idx !== -1) return idx;
+    }
+    return -1;
+  };
+
+  return {
+    codigoPontoIdx: find("codigo ponto", "codgido ponto", "cod ponto", "id_ponto"),
+    nomePontoIdx: find("nome ponto"),
+    corIdx: find("cor"),
+    nomeTributoIdx: find("nome tributo"),
+  };
+}
+
+type DefinitionStep = "method" | "source" | "review" | "done";
+const DEFINITION_STEP_ORDER: DefinitionStep[] = ["method", "source", "review", "done"];
+const DEFINITION_STEP_LABEL: Record<DefinitionStep, string> = {
+  method: "Método", source: "Dados", review: "Revisão", done: "Concluído",
+};
+
+export function DefinitionsImportWizard({
+  open, onOpenChange, category, taxCode, onImported,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  category: "ADM" | "FTX";
+  /**
+   * Fallback usado SÓ se a planilha não tiver coluna NOME TRIBUTO. PRT e
+   * Fintax têm essa coluna, então na prática isto raramente é usado — mas
+   * fica disponível para uma planilha mestre mais simples no futuro.
+   */
+  taxCode?: TaxCode;
+  onImported?: () => void;
+}) {
+  const [step, setStep] = useState<DefinitionStep>("method");
+  const [method, setMethod] = useState<SourceMethod | null>(null);
+  const [rows, setRows] = useState<DefinitionImportRow[]>([]);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [hasTaxColumn, setHasTaxColumn] = useState(false);
+  const [committing, setCommitting] = useState(false);
+  const [result, setResult] = useState<{ inserted: number; updated: number; skipped: number; unknownTaxCodes: string[] } | null>(null);
+
+  function reset() {
+    setStep("method"); setMethod(null); setRows([]); setWarnings([]); setHasTaxColumn(false); setResult(null);
+  }
+  function handleClose(next: boolean) {
+    if (!next) reset();
+    onOpenChange(next);
+  }
+
+  function applyParsed(headers: string[], rawRows: string[][]) {
+    const { codigoPontoIdx, nomePontoIdx, corIdx, nomeTributoIdx } = detectDefinitionColumns(headers);
+
+    if (codigoPontoIdx === -1 || nomePontoIdx === -1) {
+      toast.error('Não foi possível identificar as colunas "CÓDIGO PONTO" e "NOME PONTO" na planilha.');
+      return;
+    }
+    if (category === "FTX" && corIdx === -1) {
+      toast.warning('Coluna "COR" não encontrada — os pontos serão importados sem cor de risco.');
+    }
+    const foundTaxColumn = nomeTributoIdx !== -1;
+    setHasTaxColumn(foundTaxColumn);
+    if (!foundTaxColumn && !taxCode) {
+      toast.error('Planilha sem coluna "NOME TRIBUTO" e nenhum tributo padrão foi definido — não é possível continuar.');
+      return;
+    }
+    if (!foundTaxColumn) {
+      toast.warning(`Coluna "NOME TRIBUTO" não encontrada — todos os pontos serão importados como ${taxCode}.`);
+    }
+
+    const parsedRows: DefinitionImportRow[] = [];
+    const localWarnings: string[] = [];
+    const seen = new Set<string>();
+    const unrecognizedTaxNames = new Set<string>();
+
+    for (const r of rawRows) {
+      const externalId = String(r[codigoPontoIdx] ?? "").trim();
+      const name = String(r[nomePontoIdx] ?? "").trim();
+      if (!externalId || !name) continue;
+
+      let riskColor: DefinitionImportRow["risk_color"] = null;
+      if (category === "FTX" && corIdx !== -1) {
+        const rawColor = String(r[corIdx] ?? "").trim().toUpperCase();
+        if (rawColor && VALID_RISK_COLORS.includes(rawColor)) {
+          riskColor = rawColor as DefinitionImportRow["risk_color"];
+        } else if (rawColor) {
+          localWarnings.push(`Ponto ${externalId}: cor "${rawColor}" não reconhecida — ignorada.`);
+        }
+      }
+
+      let taxInfo: { taxCode: TaxCode; nature: PointNature } | null = null;
+      if (foundTaxColumn) {
+        const rawTax = String(r[nomeTributoIdx] ?? "").trim();
+        taxInfo = parseTaxNature(rawTax);
+        if (!taxInfo) {
+          unrecognizedTaxNames.add(rawTax || "(vazio)");
+          continue; // sem tributo reconhecido, não dá pra importar essa linha com segurança
+        }
+      }
+
+      if (seen.has(externalId)) {
+        localWarnings.push(`ID ${externalId} aparece mais de uma vez — última ocorrência prevalece.`);
+      }
+      seen.add(externalId);
+
+      parsedRows.push({
+        external_id: externalId,
+        name,
+        risk_color: riskColor,
+        tax_code: taxInfo?.taxCode,
+        nature: taxInfo?.nature,
+      });
+    }
+
+    if (unrecognizedTaxNames.size > 0) {
+      localWarnings.push(
+        `${unrecognizedTaxNames.size} valor(es) de tributo não reconhecido(s) — linhas ignoradas: ${Array.from(unrecognizedTaxNames).slice(0, 5).join(", ")}${unrecognizedTaxNames.size > 5 ? "…" : ""}`
+      );
+    }
+
+    if (parsedRows.length === 0) {
+      toast.error("Nenhuma linha válida encontrada.");
+      return;
+    }
+
+    const dedup = new Map<string, DefinitionImportRow>();
+    for (const r of parsedRows) dedup.set(r.external_id, r);
+
+    setRows(Array.from(dedup.values()));
+    setWarnings(localWarnings);
+    setStep("review");
+  }
+
+  async function handleFile(file: File) {
+    try {
+      const { headers, rows: r } = await parseXlsxFile(file, 1);
+      applyParsed(headers, r);
+    } catch {
+      toast.error("Não foi possível ler o arquivo. Tente colar os dados manualmente.");
+      setMethod("paste");
+    }
+  }
+
+  function handlePaste(text: string) {
+    const { headers, rows: r } = parsePastedText(text, 1);
+    applyParsed(headers, r);
+  }
+
+  async function handleCommit() {
+    setCommitting(true);
+    try {
+      const res = await creditPointDefinitionsApi.bulkImport(category, rows, taxCode);
+      setResult(res);
+      setStep("done");
+      if (res.skipped > 0) {
+        toast.warning(`${res.skipped} linha(s) ignorada(s) — confira o resumo.`);
+      }
+      toast.success(`${res.inserted} novo(s) e ${res.updated} atualizado(s).`);
+      onImported?.();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Erro ao importar.");
+    } finally {
+      setCommitting(false);
+    }
+  }
+
+  const stepIndex = DEFINITION_STEP_ORDER.indexOf(step);
+  const taxSummary = rows.reduce<Record<string, number>>((acc, r) => {
+    const key = r.tax_code ?? taxCode ?? "?";
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  return (
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Importar tabela mestre — Pontos {category}</DialogTitle>
+        </DialogHeader>
+
+        <WizardSteps steps={DEFINITION_STEP_ORDER} labels={DEFINITION_STEP_LABEL} currentIndex={stepIndex} />
+
+        {step === "method" && (
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">
+              Envie a planilha mestre com as colunas <strong>CÓDIGO PONTO</strong>, <strong>NOME PONTO</strong> e{" "}
+              <strong>NOME TRIBUTO</strong> (o tributo de cada ponto é lido dessa coluna — não precisa ser o
+              mesmo para o arquivo inteiro)
+              {category === "FTX" && <> — e <strong>COR</strong>, para a cor de risco</>}.
+            </p>
+            <div className="grid grid-cols-2 gap-4">
+              <button onClick={() => { setMethod("file"); setStep("source"); }}
+                className="flex flex-col items-center gap-3 border border-border rounded-xl p-8 hover:border-primary/50 hover:bg-muted/50 transition-colors">
+                <FileUp className="h-8 w-8 text-primary" />
+                <p className="font-medium text-sm">Enviar planilha (.xlsx)</p>
+              </button>
+              <button onClick={() => { setMethod("paste"); setStep("source"); }}
+                className="flex flex-col items-center gap-3 border border-border rounded-xl p-8 hover:border-primary/50 hover:bg-muted/50 transition-colors">
+                <PasteIcon className="h-8 w-8 text-primary" />
+                <p className="font-medium text-sm">Colar dados do Excel</p>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "source" && (
+          <div className="space-y-4 py-2">
+            {method === "file" ? <FileDropzone onFile={handleFile} /> : <PasteArea onChangeText={handlePaste} />}
+            <div className="flex justify-start pt-2">
+              <Button variant="outline" onClick={() => setStep("method")}><ArrowLeft className="h-4 w-4" /> Voltar</Button>
+            </div>
+          </div>
+        )}
+
+        {step === "review" && (
+          <div className="space-y-4 py-2">
+            <p className="text-sm">
+              <strong>{rows.length}</strong> ponto(s) únicos detectados. Pontos já existentes
+              terão nome{category === "FTX" && ", cor"} e tributo atualizados; novos serão criados.
+            </p>
+
+            {hasTaxColumn && (
+              <div className="flex flex-wrap gap-1.5">
+                {Object.entries(taxSummary).map(([code, count]) => (
+                  <Badge key={code} variant="outline" className="text-xs">{code}: {count}</Badge>
+                ))}
+              </div>
+            )}
+
+            {warnings.length > 0 && (
+              <ul className="text-xs text-amber-600 space-y-1 max-h-24 overflow-auto">
+                {warnings.slice(0, 10).map((w, i) => <li key={i}>⚠ {w}</li>)}
+                {warnings.length > 10 && <li>… e mais {warnings.length - 10} avisos</li>}
+              </ul>
+            )}
+
+            <div className="max-h-64 overflow-auto border border-border rounded-lg divide-y divide-border">
+              {rows.slice(0, 50).map((r) => (
+                <div key={r.external_id} className="flex items-center gap-2 px-3 py-1.5 text-sm">
+                  <span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded shrink-0">
+                    {r.external_id}
+                  </span>
+                  <span className="truncate flex-1">{r.name}</span>
+                  {r.tax_code && (
+                    <Badge variant="secondary" className="shrink-0 text-xs">{r.tax_code}</Badge>
+                  )}
+                  {r.nature === "PASSIVO" && (
+                    <Badge variant="warning" className="shrink-0 text-xs">Passivo</Badge>
+                  )}
+                  {r.risk_color && (
+                    <Badge
+                      variant={r.risk_color === "VERDE" ? "success" : r.risk_color === "AMARELO" ? "warning" : "destructive"}
+                      className="shrink-0 text-xs"
+                    >
+                      {r.risk_color}
+                    </Badge>
+                  )}
+                </div>
+              ))}
+              {rows.length > 50 && (
+                <p className="px-3 py-1.5 text-xs text-muted-foreground">… e mais {rows.length - 50} ponto(s)</p>
+              )}
+            </div>
+
+            <div className="flex justify-between pt-2">
+              <Button variant="outline" onClick={() => setStep("source")}><ArrowLeft className="h-4 w-4" /> Voltar</Button>
+              <Button onClick={handleCommit} disabled={committing}>
+                {committing
+                  ? <><Loader2 className="h-4 w-4 animate-spin" /> Importando…</>
+                  : <><CheckCircle2 className="h-4 w-4" /> Importar {rows.length} ponto(s)</>
+                }
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {step === "done" && result && (
+          <div className="flex flex-col items-center gap-3 py-10 text-center">
+            <CheckCircle2 className="h-10 w-10 text-success" />
+            <p className="font-medium">{result.inserted} novo(s) e {result.updated} atualizado(s).</p>
+            {result.skipped > 0 && (
+              <p className="text-xs text-warning">
+                {result.skipped} linha(s) ignorada(s)
+                {result.unknownTaxCodes.length > 0 && ` — tributo(s) não cadastrado(s): ${result.unknownTaxCodes.join(", ")}`}.
+              </p>
+            )}
+            <Button onClick={() => handleClose(false)}>Concluir</Button>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }

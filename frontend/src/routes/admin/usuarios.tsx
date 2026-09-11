@@ -1,10 +1,12 @@
+//routes/admin/usuarios.tsx
+
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Plus, Search, ShieldCheck, ShieldOff, UserX } from "lucide-react";
+import { Plus, Search, ShieldCheck, ShieldOff, Trash2 } from "lucide-react";
 import { usersApi } from "@/lib/api";
-import type { JobTitle, Role } from "@/lib/types";
+import type { JobTitle, Role, User } from "@/lib/types";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
@@ -106,6 +108,7 @@ function NewUserDialog() {
 function UsersAdminPage() {
   const { user: me } = useAuth();
   const [search, setSearch] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
   const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery({
@@ -119,10 +122,18 @@ function UsersAdminPage() {
     onError: (err) => toast.error(err instanceof Error ? err.message : "Erro ao atualizar papel."),
   });
 
-  const deactivateMutation = useMutation({
+  // "Excluir" usuário = soft-delete (is_active=0 + revoga sessões). Hard
+  // delete quebraria com erro de FK para qualquer usuário que já criou job
+  // ou está em alguma equipe (jobs.created_by, job_team_members.user_id,
+  // job_reports.responsible_user_id não têm ON DELETE CASCADE).
+  const deleteMutation = useMutation({
     mutationFn: (id: number) => usersApi.deactivate(id),
-    onSuccess: () => { toast.success("Usuário desativado."); queryClient.invalidateQueries({ queryKey: ["users"] }); },
-    onError: (err) => toast.error(err instanceof Error ? err.message : "Erro ao desativar."),
+    onSuccess: () => {
+      toast.success("Usuário excluído.");
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+      setDeleteTarget(null);
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Erro ao excluir usuário."),
   });
 
   return (
@@ -163,14 +174,38 @@ function UsersAdminPage() {
                 {u.role === "admin" ? "Tornar usuário" : "Tornar admin"}
               </Button>
               {u.is_active && u.id !== me?.id && (
-                <Button variant="ghost" size="sm" onClick={() => deactivateMutation.mutate(u.id)}>
-                  <UserX className="h-4 w-4" /> Desativar
+                <Button
+                  variant="ghost" size="sm"
+                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                  onClick={() => setDeleteTarget(u)}
+                >
+                  <Trash2 className="h-4 w-4" /> Excluir
                 </Button>
               )}
             </div>
           </Card>
         ))}
       </div>
+
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Excluir "{deleteTarget?.name}"?</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            O usuário perde acesso à plataforma imediatamente (sessões ativas são revogadas).
+            Jobs e pareceres em que ele já apareceu continuam intactos.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>Cancelar</Button>
+            <Button
+              variant="destructive"
+              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? "Excluindo…" : "Sim, excluir"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

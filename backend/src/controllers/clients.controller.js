@@ -76,4 +76,32 @@ async function create(req, res, next) {
   }
 }
 
-module.exports = { list, create };
+// adicionar no fim, antes do module.exports
+
+async function remove(req, res, next) {
+  try {
+    const { id } = req.params;
+    const [rows] = await pool.query(`SELECT id, company_name FROM clients WHERE id = ?`, [id]);
+    if (!rows[0]) throw new ApiError(404, 'Cliente não encontrado.');
+
+    try {
+      await pool.query(`DELETE FROM clients WHERE id = ?`, [id]);
+    } catch (err) {
+      if (err.code === 'ER_ROW_IS_REFERENCED_2' || err.code === 'ER_ROW_IS_REFERENCED') {
+        throw new ApiError(409, 'Não é possível excluir: este cliente tem job(s) vinculado(s). Exclua os jobs primeiro.');
+      }
+      throw err;
+    }
+
+    await logAction(req, {
+      action: 'CLIENT_DELETED', entityType: 'client', entityId: Number(id),
+      details: { company_name: rows[0].company_name },
+    });
+
+    res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { list, create, remove };
