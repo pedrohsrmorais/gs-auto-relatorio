@@ -406,6 +406,95 @@ async function bulkImportIrCsll(req, res, next) {
 
 const clearIrCsll = clearPontos('pontos_ir_csll', 'PONTOS_IR_CSLL');
 
+// ═════════════════════════════════════════════════════════════════════════
+// Pontos INSS — anual, valor único (sem split, como IPI só que por ano)
+//
+// Body: { rows: [{ credit_point_definition_id, reference_year, value }] }
+// Mesmo padrão de bulkImportIrCsll: 1 arquivo cobre N pontos de uma vez,
+// cada linha já vem com o ponto RESOLVIDO pelo frontend (usuário confirmou
+// o match, usou o respaldo por ordem, ou criou um ponto novo).
+// ═════════════════════════════════════════════════════════════════════════
+
+async function listInss(req, res, next) {
+  try {
+    const { jobId } = req.params;
+    const [rows] = await pool.query(
+      `SELECT p.*, d.external_id, d.name AS point_name, d.risk_color, d.tax_id, t.code AS tax_code, t.name AS tax_name
+       FROM pontos_inss p
+       JOIN credit_point_definitions d ON d.id = p.credit_point_definition_id
+       LEFT JOIN taxes t ON t.id = d.tax_id
+       WHERE p.job_id = ?
+       ORDER BY d.name ASC, p.reference_year ASC`,
+      [jobId]
+    );
+    res.json({ data: rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function bulkImportInss(req, res, next) {
+  try {
+    const { jobId } = req.params;
+    const { rows } = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) throw new ApiError(400, 'Nenhum valor para importar.');
+
+    await assertJobExists(jobId);
+
+    const pointIds = [...new Set(rows.map((r) => r.credit_point_definition_id).filter(Boolean))];
+    if (pointIds.length === 0) throw new ApiError(400, 'Nenhum ponto do catálogo foi selecionado para esta importação.');
+
+    const [pointRows] = await pool.query(
+      `SELECT id, name FROM credit_point_definitions WHERE id IN (?)`, [pointIds]
+    );
+    const pointById = new Map(pointRows.map((p) => [p.id, p]));
+
+    const missingIds = pointIds.filter((id) => !pointById.has(id));
+    if (missingIds.length > 0) {
+      throw new ApiError(400, `Ponto(s) não encontrado(s) no catálogo: ${missingIds.join(', ')}.`);
+    }
+
+    const conn = await pool.getConnection();
+    let totalInserted = 0;
+    try {
+      await conn.beginTransaction();
+
+      for (const row of rows) {
+        const pointId = row.credit_point_definition_id;
+        if (!pointId || !row.reference_year) continue;
+
+        await conn.query(
+          `INSERT INTO pontos_inss (job_id, credit_point_definition_id, reference_year, value)
+           VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE value = VALUES(value)`,
+          [jobId, pointId, row.reference_year, num(row.value)]
+        );
+        totalInserted += 1;
+      }
+
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+
+    await logAction(req, {
+      action: 'INSS_PONTO_IMPORTED',
+      entityType: 'pontos_inss',
+      jobId: Number(jobId),
+      details: { total_inserted: totalInserted, points: Array.from(pointById.values()) },
+    });
+
+    res.json({ data: { inserted: totalInserted } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+const clearInss = clearPontos('pontos_inss', 'PONTOS_INSS');
+
 // ─── Credit point definitions (catálogo global de pontos) ────────────────────
 
 /**
@@ -649,7 +738,10 @@ async function removeDefinition(req, res, next) {
     const [[{ irCsllCount }]] = await pool.query(
       `SELECT COUNT(*) AS irCsllCount FROM pontos_ir_csll WHERE credit_point_definition_id = ?`, [id]
     );
-    if (Number(admCount) + Number(ftxCount) + Number(ipiCount) + Number(irCsllCount) > 0) {
+    const [[{ inssCount }]] = await pool.query(
+      `SELECT COUNT(*) AS inssCount FROM pontos_inss WHERE credit_point_definition_id = ?`, [id]
+    );
+    if (Number(admCount) + Number(ftxCount) + Number(ipiCount) + Number(irCsllCount) + Number(inssCount) > 0) {
       throw new ApiError(409, 'Não é possível excluir: este ponto já tem valores importados em algum job.');
     }
 
@@ -684,6 +776,7 @@ async function resetAllDefinitions(req, res, next) {
     const [[{ c3 }]] = await conn.query('SELECT COUNT(*) AS c3 FROM pontos_ftx');
     const [[{ c4 }]] = await conn.query('SELECT COUNT(*) AS c4 FROM pontos_ipi');
     const [[{ c5 }]] = await conn.query('SELECT COUNT(*) AS c5 FROM pontos_ir_csll');
+    const [[{ c7 }]] = await conn.query('SELECT COUNT(*) AS c7 FROM pontos_inss');
     const [[{ c6 }]] = await conn.query('SELECT COUNT(*) AS c6 FROM credit_point_definitions');
 
     await conn.query('DELETE FROM job_point_notes');
@@ -691,6 +784,7 @@ async function resetAllDefinitions(req, res, next) {
     await conn.query('DELETE FROM pontos_ftx');
     await conn.query('DELETE FROM pontos_ipi');
     await conn.query('DELETE FROM pontos_ir_csll');
+    await conn.query('DELETE FROM pontos_inss');
     await conn.query('DELETE FROM credit_point_definitions');
 
     await conn.commit();
@@ -701,6 +795,7 @@ async function resetAllDefinitions(req, res, next) {
       pontos_ftx: c3,
       pontos_ipi: c4,
       pontos_ir_csll: c5,
+      pontos_inss: c7,
       credit_point_definitions: c6,
     };
 
@@ -724,6 +819,7 @@ module.exports = {
   listFtx, bulkImportFtx, clearFtx,
   listIpi, bulkImportIpi, clearIpi,
   listIrCsll, bulkImportIrCsll, clearIrCsll,
+  listInss, bulkImportInss, clearInss,
   listDefinitions, updateDefinitionName, bulkImportDefinitions,
   quickCreateDefinition, removeDefinition, resetAllDefinitions,
 };

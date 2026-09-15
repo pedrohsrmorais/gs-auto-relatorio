@@ -332,3 +332,188 @@ export function parseIrCsllTotais(grid: string[][]): ParseIrCsllTotaisResult {
 
   return { rows, pointNames, warnings };
 }
+
+
+// ═════════════════════════════════════════════════════════════════════════
+// INSS — "Importar Pontos INSS". 1 arquivo = N pontos, lidos da aba
+// "Totais": cada ponto ocupa UMA linha (nome + um valor por ano — sem
+// split, diferente de IR/CSLL). A aba termina numa linha de resumo (nome
+// "INSS", geralmente com #REF! em algumas células) — reconhecida porque
+// não tem o marcador (ícone) que toda linha de ponto de verdade tem na
+// coluna imediatamente à esquerda do nome.
+// ═════════════════════════════════════════════════════════════════════════
+
+export interface ParsedInssRow {
+  point_name: string;
+  reference_year: number;
+  value: number;
+}
+
+export interface ParseInssTotaisResult {
+  rows: ParsedInssRow[];
+  /** Nomes dos pontos, na ORDEM em que aparecem no arquivo — importante
+   *  para o respaldo por ordem (ver INSS_TOTAIS_TEMPLATE_ORDER abaixo). */
+  pointNames: string[];
+  warnings: string[];
+}
+
+export function parseInssTotais(grid: string[][]): ParseInssTotaisResult {
+  const warnings: string[] = [];
+  const rows: ParsedInssRow[] = [];
+  const pointNames: string[] = [];
+
+  let headerRowIdx = -1;
+  let nameColIdx = -1;
+  let yearColIndices: number[] = [];
+
+  for (let r = 0; r < grid.length; r++) {
+    const cells = grid[r].map((c) => (c ?? "").trim());
+    const pontosIdx = cells.findIndex((c) => normalize(c) === "pontos");
+    if (pontosIdx === -1) continue;
+    const afterCells = cells.slice(pontosIdx + 1);
+    const yearIdxRelative: number[] = [];
+    afterCells.forEach((c, i) => { if (/^20\d{2}$/.test(c)) yearIdxRelative.push(pontosIdx + 1 + i); });
+    if (yearIdxRelative.length >= 2) {
+      headerRowIdx = r; nameColIdx = pontosIdx; yearColIndices = yearIdxRelative;
+      break;
+    }
+  }
+
+  if (headerRowIdx === -1) {
+    warnings.push('Cabeçalho "Pontos / 2021 / 2022 / ..." não encontrado na aba "Totais".');
+    return { rows, pointNames: [], warnings };
+  }
+
+  const years = yearColIndices.map((idx) => Number(grid[headerRowIdx][idx]));
+  const iconColIdx = nameColIdx - 1; // marcador que toda linha de ponto de verdade tem
+
+  for (let i = headerRowIdx + 1; i < grid.length; i++) {
+    const row = grid[i] ?? [];
+    const name = (row[nameColIdx] ?? "").trim();
+    if (!name) break;
+
+    if (iconColIdx >= 0) {
+      const icon = (row[iconColIdx] ?? "").trim();
+      if (!icon) break; // sinal principal: sem marcador = fim dos pontos (linha de resumo)
+    } else {
+      // Sem coluna de ícone disponível (planilha atípica) — usa o próprio
+      // nome como sinal de segurança para não importar a linha de resumo.
+      const n = normalize(name);
+      if (n === "inss" || n === "total") break;
+    }
+
+    pointNames.push(name);
+    years.forEach((year, yIdx) => {
+      const raw = row[yearColIndices[yIdx]] ?? "";
+      const value = parseNumber(raw);
+      rows.push({ point_name: name, reference_year: year, value: value ?? 0 });
+    });
+  }
+
+  if (rows.length === 0) warnings.push('Nenhum ponto encontrado na aba "Totais".');
+
+  return { rows, pointNames, warnings };
+}
+
+// ─── Ordem canônica dos pontos na planilha-padrão de INSS ("Totais") ────────
+//
+// Usada SÓ como respaldo opcional (toggle "usar ordem dos pontos" no
+// wizard): quando o nome de uma linha não bate com nenhum ponto do
+// catálogo, tenta achar o ponto pelo NOME CANÔNICO esperado naquela
+// posição — não pela posição crua do catálogo, que pode estar em outra
+// ordem. Construída a partir de duas planilhas reais de clientes
+// diferentes (mesmo template, mesma ordem nas duas) cruzadas com a base
+// "Pontos_Prev". 2 das 81 posições ("Desoneração da Folha" e "Atualização
+// Monetária") não têm ponto correspondente no catálogo ainda — o respaldo
+// não resolve esses dois, mesmo ligado; precisam de busca manual.
+export interface InssTemplateOrderEntry {
+  position: number;
+  templateName: string;
+  /** external_id no catálogo (credit_point_definitions), ou null se esse
+   *  ponto do template ainda não existe cadastrado. */
+  externalId: string | null;
+}
+
+export const INSS_TOTAIS_TEMPLATE_ORDER: InssTemplateOrderEntry[] = [
+  { position: 1, templateName: "RATxFAP", externalId: "0111000059" },
+  { position: 2, templateName: "Desoneração da Folha", externalId: null },
+  { position: 3, templateName: "Retenções", externalId: "0111000054" },
+  { position: 4, templateName: "Aviso Prévio Indenizado", externalId: "011100004" },
+  { position: 5, templateName: "Salário Maternidade", externalId: "0111000051" },
+  { position: 6, templateName: "15 Primeiros Dias de Afastamento", externalId: "011100001" },
+  { position: 7, templateName: "Abono Assiduidade", externalId: "011100003" },
+  { position: 8, templateName: "Salário Educação", externalId: "0111000058" },
+  { position: 9, templateName: "PIS sobre Folha", externalId: "0111000057" },
+  { position: 10, templateName: "RAT - Ajuste CBO/CNAE", externalId: "0111000053" },
+  { position: 11, templateName: "Pagamento a Maior", externalId: "0111000056" },
+  { position: 12, templateName: "Prêmios e Bonificações", externalId: "011100002" },
+  { position: 13, templateName: "Férias em Dobro", externalId: "011100005" },
+  { position: 14, templateName: "Férias Indenizadas", externalId: "011100006" },
+  { position: 15, templateName: "Previdência Privada (Contribuição Patronal)", externalId: "011100007" },
+  { position: 16, templateName: "Auxílio Alimentação", externalId: "011100008" },
+  { position: 17, templateName: "Auxílio Transporte (Vale-Transporte)", externalId: "011100009" },
+  { position: 18, templateName: "Auxílio Refeição", externalId: "0111000010" },
+  { position: 19, templateName: "Multa Rescisória (40% FGTS)", externalId: "0111000011" },
+  { position: 20, templateName: "Indenização Art. 479", externalId: "0111000013" },
+  { position: 21, templateName: "Indenização Safrista", externalId: "0111000014" },
+  { position: 22, templateName: "Incentivo à Demissão Voluntária (PDV)", externalId: "0111000015" },
+  { position: 23, templateName: "Indenização Adicional da Lei nº 7.238/1984", externalId: "0111000016" },
+  { position: 24, templateName: "Licença-Prêmio Indenizada", externalId: "0111000018" },
+  { position: 25, templateName: "Abono Pecuniário de Férias", externalId: "0111000019" },
+  { position: 26, templateName: "Diárias para Viagem", externalId: "0111000020" },
+  { position: 27, templateName: "Ressarcimento de Despesas com Utilização de Veículo Próprio", externalId: "0111000021" },
+  { position: 28, templateName: "Auxilio Creche", externalId: "0111000022" },
+  { position: 29, templateName: "Reembolso Babá", externalId: "0111000023" },
+  { position: 30, templateName: "Assistência Médica", externalId: "0111000024" },
+  { position: 31, templateName: "Assistência Odontológica", externalId: "0111000025" },
+  { position: 32, templateName: "Reembolso de Despesas Médicas", externalId: "0111000026" },
+  { position: 33, templateName: "Reembolso de Medicamentos", externalId: "0111000027" },
+  { position: 34, templateName: "Reembolso de Despesas Hospitalares", externalId: "0111000028" },
+  { position: 35, templateName: "Fornecimento ou Reembolso de Próteses, Órteses, Aparelhos Ortopédicos, Óculos e Similares", externalId: "0111000029" },
+  { position: 36, templateName: "Bolsa Estudo", externalId: "0111000030" },
+  { position: 37, templateName: "Auxilio Educação", externalId: "0111000031" },
+  { position: 38, templateName: "Programas de Qualificação Profissional", externalId: "0111000032" },
+  { position: 39, templateName: "Bolsa Estágio", externalId: "0111000033" },
+  { position: 40, templateName: "Bolsa de Ensino, Pesquisa, Extensão e Incentivo à Inovação", externalId: "0111000034" },
+  { position: 41, templateName: "Previdência Complementar", externalId: "0111000035" },
+  { position: 42, templateName: "Seguro de Vida", externalId: "0111000036" },
+  { position: 43, templateName: "PLR", externalId: "0111000037" },
+  { position: 44, templateName: "Abonos", externalId: "0111000038" },
+  { position: 45, templateName: "Vestuário Fornecido para Execução das Atividades", externalId: "0111000039" },
+  { position: 46, templateName: "Uniformes", externalId: "0111000040" },
+  { position: 47, templateName: "Equipamentos de Proteção Individual (EPIs)", externalId: "0111000041" },
+  { position: 48, templateName: "Ferramentas e Acessórios Fornecidos para Prestação dos Serviços", externalId: "0111000042" },
+  { position: 49, templateName: "Alimentação, Transporte e Habitação em Canteiros de Obra ou Locais de Difícil Acesso", externalId: "0111000043" },
+  { position: 50, templateName: "Complementação de Auxílio por Incapacidade Temporária", externalId: "0111000044" },
+  { position: 51, templateName: "Valores Decorrentes de Cessão de Direitos Autorais", externalId: "0111000045" },
+  { position: 52, templateName: "Indenização Multa Art. 477", externalId: "0111000046" },
+  { position: 53, templateName: "Auxílio Funeral", externalId: "0111000047" },
+  { position: 54, templateName: "Assistência à Família em Razão do Falecimento do Segurado", externalId: "0111000048" },
+  { position: 55, templateName: "Vale-Cultura", externalId: "0111000049" },
+  { position: 56, templateName: "Auxílio-Inclusão da Pessoa com Deficiência", externalId: "0111000050" },
+  { position: 57, templateName: "Prorrogação do Salário-Maternidade", externalId: "0111000055" },
+  { position: 58, templateName: "Ajuda de Custos", externalId: "0111000052" },
+  { position: 59, templateName: "Atualização Monetária", externalId: null },
+  { position: 60, templateName: "Licença Paternidade", externalId: "0111000061" },
+  { position: 61, templateName: "Bonus Retenção", externalId: "0111000062" },
+  { position: 62, templateName: "Stock Options", externalId: "0111000063" },
+  { position: 63, templateName: "Horas Extras", externalId: "0111000064" },
+  { position: 64, templateName: "RAT Sem Exposição ao Risco Laboral", externalId: "0111000065" },
+  { position: 65, templateName: "Descontos Vale Transporte", externalId: "0111000066" },
+  { position: 66, templateName: "Descontos Vale Alimentação", externalId: "0111000067" },
+  { position: 67, templateName: "Desconto de Academias e Programas de Bem-Estar", externalId: "0111000068" },
+  { position: 68, templateName: "Desconto de Convênio Farmácia", externalId: "0111000069" },
+  { position: 69, templateName: "Desconto de Seguro de Vida", externalId: "0111000070" },
+  { position: 70, templateName: "Desconto de Previdência Privada", externalId: "0111000071" },
+  { position: 71, templateName: "Desconto de Clubes e Associações", externalId: "0111000072" },
+  { position: 72, templateName: "Desconto de Convênios Educacionais", externalId: "0111000073" },
+  { position: 73, templateName: "Desconto de Convênios com Óticas", externalId: "0111000074" },
+  { position: 74, templateName: "13º Sobre Aviso Prévio Indenizado", externalId: "0111000075" },
+  { position: 75, templateName: "Adicional Noturno", externalId: "0111000080" },
+  { position: 76, templateName: "Adicional de Insalubridade", externalId: "0111000081" },
+  { position: 77, templateName: "Entidades Parafiscais", externalId: "0111000077" },
+  { position: 78, templateName: "Descontos INSS", externalId: "0111000078" },
+  { position: 79, templateName: "Descontos IRRF", externalId: "0111000078" },
+  { position: 80, templateName: "Descontos Assistência Médica/Odontológica", externalId: "0111000079" },
+  { position: 81, templateName: "Sistema 4S's", externalId: "0111000076" },
+];

@@ -12,8 +12,13 @@ const { pool } = require('../config/database');
  *
  * Cada combinação aponta pra uma tabela de valores diferente:
  *   ADM/FTX + PIS_COFINS -> pontos_adm / pontos_ftx (mensal, split PIS/COFINS)
- *   ADM     + IPI        -> pontos_ipi              (mensal, valor único)
- *   ADM     + IRPJ_CSLL  -> pontos_ir_csll           (anual, split IRPJ/CSLL)
+ *   ADM/FTX + IPI        -> pontos_ipi              (mensal, valor único)
+ *   ADM/FTX + IRPJ_CSLL  -> pontos_ir_csll           (anual, split IRPJ/CSLL)
+ *
+ * IPI e IRPJ_CSLL existem tanto em ADM quanto em FTX no catálogo (ex.: a
+ * planilha mestre Fintax traz pontos IRPJ/CSLL com cor de risco) — por isso
+ * listPointsIpi/listPointsIrCsll filtram por category como qualquer outro
+ * tributo, sem a restrição "só ADM" que existia antes.
  *
  * O formato de resposta do resumo por ponto inclui SEMPRE `total`, e um
  * array `breakdown` com os componentes (PIS/COFINS, IRPJ/CSLL, ou vazio
@@ -30,7 +35,7 @@ class ApiError extends Error {
 }
 
 const VALID_CATEGORIES = ['ADM', 'FTX'];
-const VALID_TAXES = ['PIS_COFINS', 'IPI', 'IRPJ_CSLL'];
+const VALID_TAXES = ['PIS_COFINS', 'IPI', 'IRPJ_CSLL', 'INSS'];
 
 function toNumber(v) {
   return v === null || v === undefined ? 0 : Number(v);
@@ -162,19 +167,20 @@ async function getMonthlyPisCofins(jobId, category, creditPointDefinitionId) {
 // IPI — pontos_ipi (mensal, valor único, sem split)
 // ═════════════════════════════════════════════════════════════════════════
 
-async function listPointsIpi(jobId) {
+async function listPointsIpi(jobId, category) {
   const [rows] = await pool.query(
     `SELECT
        d.id AS credit_point_definition_id,
        d.external_id,
        d.name,
+       d.risk_color,
        SUM(p.value) AS total
      FROM pontos_ipi p
      JOIN credit_point_definitions d ON d.id = p.credit_point_definition_id
-     WHERE p.job_id = ?
-     GROUP BY d.id, d.external_id, d.name
+     WHERE p.job_id = ? AND d.category = ?
+     GROUP BY d.id, d.external_id, d.name, d.risk_color
      ORDER BY d.name ASC, d.external_id ASC`,
-    [jobId]
+    [jobId, category]
   );
 
   if (rows.length > 0) {
@@ -203,7 +209,7 @@ async function listPointsIpi(jobId) {
       credit_point_definition_id: r.credit_point_definition_id,
       external_id: r.external_id,
       name: r.name,
-      risk_color: null,
+      risk_color: r.risk_color ?? null,
       total,
       breakdown: [],
       observations: note?.observations ?? null,
@@ -230,20 +236,21 @@ async function getMonthlyIpi(jobId, creditPointDefinitionId) {
 // IRPJ/CSLL — pontos_ir_csll (anual, split IRPJ/CSLL)
 // ═════════════════════════════════════════════════════════════════════════
 
-async function listPointsIrCsll(jobId) {
+async function listPointsIrCsll(jobId, category) {
   const [rows] = await pool.query(
     `SELECT
        d.id AS credit_point_definition_id,
        d.external_id,
        d.name,
+       d.risk_color,
        SUM(CASE WHEN p.tax_sub_type = 'IRPJ' THEN p.value ELSE 0 END) AS irpj_total,
        SUM(CASE WHEN p.tax_sub_type = 'CSLL' THEN p.value ELSE 0 END) AS csll_total
      FROM pontos_ir_csll p
      JOIN credit_point_definitions d ON d.id = p.credit_point_definition_id
-     WHERE p.job_id = ?
-     GROUP BY d.id, d.external_id, d.name
+     WHERE p.job_id = ? AND d.category = ?
+     GROUP BY d.id, d.external_id, d.name, d.risk_color
      ORDER BY d.name ASC, d.external_id ASC`,
-    [jobId]
+    [jobId, category]
   );
 
   if (rows.length > 0) {
@@ -273,7 +280,7 @@ async function listPointsIrCsll(jobId) {
       credit_point_definition_id: r.credit_point_definition_id,
       external_id: r.external_id,
       name: r.name,
-      risk_color: null,
+      risk_color: r.risk_color ?? null,
       irpj_total: irpj,
       csll_total: csll,
       total: irpj + csll,
@@ -308,6 +315,75 @@ async function getMonthlyIrCsll(jobId, creditPointDefinitionId) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
+// INSS — pontos_inss (anual, valor único, sem split)
+// ═════════════════════════════════════════════════════════════════════════
+
+async function listPointsInss(jobId, category) {
+  const [rows] = await pool.query(
+    `SELECT
+       d.id AS credit_point_definition_id,
+       d.external_id,
+       d.name,
+       d.risk_color,
+       SUM(p.value) AS total
+     FROM pontos_inss p
+     JOIN credit_point_definitions d ON d.id = p.credit_point_definition_id
+     WHERE p.job_id = ? AND d.category = ?
+     GROUP BY d.id, d.external_id, d.name, d.risk_color
+     ORDER BY d.name ASC, d.external_id ASC`,
+    [jobId, category]
+  );
+
+  if (rows.length > 0) {
+    const values = rows.map((r) => [jobId, r.credit_point_definition_id]);
+    await pool.query(
+      `INSERT IGNORE INTO job_point_notes (job_id, credit_point_definition_id) VALUES ?`,
+      [values]
+    );
+  }
+
+  const ids = rows.map((r) => r.credit_point_definition_id);
+  let notesById = new Map();
+  if (ids.length > 0) {
+    const [notes] = await pool.query(
+      `SELECT credit_point_definition_id, observations FROM job_point_notes
+       WHERE job_id = ? AND credit_point_definition_id IN (?)`,
+      [jobId, ids]
+    );
+    notesById = new Map(notes.map((n) => [n.credit_point_definition_id, n]));
+  }
+
+  return rows.map((r) => {
+    const note = notesById.get(r.credit_point_definition_id);
+    const total = toNumber(r.total);
+    return {
+      credit_point_definition_id: r.credit_point_definition_id,
+      external_id: r.external_id,
+      name: r.name,
+      risk_color: r.risk_color ?? null,
+      total,
+      breakdown: [],
+      observations: note?.observations ?? null,
+    };
+  });
+}
+
+async function getMonthlyInss(jobId, creditPointDefinitionId) {
+  const [rows] = await pool.query(
+    `SELECT reference_year, value
+     FROM pontos_inss
+     WHERE job_id = ? AND credit_point_definition_id = ?
+     ORDER BY reference_year ASC`,
+    [jobId, creditPointDefinitionId]
+  );
+
+  return rows.map((r) => ({
+    period_label: String(r.reference_year),
+    total: toNumber(r.value),
+  }));
+}
+
+// ═════════════════════════════════════════════════════════════════════════
 // Endpoints — despacham para a implementação certa conforme `tax`
 // ═════════════════════════════════════════════════════════════════════════
 
@@ -321,12 +397,13 @@ async function listPoints(req, res, next) {
     await assertJobExists(jobId);
 
     if (tax === 'IPI') {
-      if (category !== 'ADM') throw new ApiError(400, 'IPI só está disponível na categoria ADM.');
-      return res.json({ data: await listPointsIpi(jobId) });
+      return res.json({ data: await listPointsIpi(jobId, category) });
     }
     if (tax === 'IRPJ_CSLL') {
-      if (category !== 'ADM') throw new ApiError(400, 'IRPJ/CSLL só está disponível na categoria ADM.');
-      return res.json({ data: await listPointsIrCsll(jobId) });
+      return res.json({ data: await listPointsIrCsll(jobId, category) });
+    }
+    if (tax === 'INSS') {
+      return res.json({ data: await listPointsInss(jobId, category) });
     }
     res.json({ data: await listPointsPisCofins(jobId, category) });
   } catch (err) {
@@ -349,6 +426,9 @@ async function getMonthly(req, res, next) {
     if (tax === 'IRPJ_CSLL') {
       return res.json({ data: await getMonthlyIrCsll(jobId, creditPointDefinitionId) });
     }
+    if (tax === 'INSS') {
+      return res.json({ data: await getMonthlyInss(jobId, creditPointDefinitionId) });
+    }
     res.json({ data: await getMonthlyPisCofins(jobId, category, creditPointDefinitionId) });
   } catch (err) {
     next(err);
@@ -370,8 +450,10 @@ async function updateNote(req, res, next) {
        UNION SELECT 1 FROM pontos_ftx WHERE job_id = ? AND credit_point_definition_id = ?
        UNION SELECT 1 FROM pontos_ipi WHERE job_id = ? AND credit_point_definition_id = ?
        UNION SELECT 1 FROM pontos_ir_csll WHERE job_id = ? AND credit_point_definition_id = ?
+       UNION SELECT 1 FROM pontos_inss WHERE job_id = ? AND credit_point_definition_id = ?
        LIMIT 1`,
-      [jobId, creditPointDefinitionId, jobId, creditPointDefinitionId, jobId, creditPointDefinitionId, jobId, creditPointDefinitionId]
+      [jobId, creditPointDefinitionId, jobId, creditPointDefinitionId, jobId, creditPointDefinitionId,
+       jobId, creditPointDefinitionId, jobId, creditPointDefinitionId]
     );
     if (!related[0]) throw new ApiError(404, 'Ponto não encontrado para este job.');
 

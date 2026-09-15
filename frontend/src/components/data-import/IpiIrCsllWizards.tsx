@@ -19,6 +19,7 @@ import {
 import {
   parseIpiComparativo, type ParseIpiComparativoResult, type ParsedIpiMonthlyRow,
   parseIrCsllTotais, type ParsedIrCsllRow,
+  parseInssTotais, type ParsedInssRow, INSS_TOTAIS_TEMPLATE_ORDER,
 } from "@/lib/import/customParsers";
 import { creditPointDefinitionsApi, type PointDefinition, type TaxCode } from "@/lib/api";
 
@@ -78,7 +79,7 @@ function normalizeMatch(s: string): string {
 
 export type MatchSelection =
   | { mode: "existing"; pointId: number }
-  | { mode: "new"; name: string }
+  | { mode: "new"; name: string; category: "ADM" | "FTX" }
   | { mode: "unresolved" };
 
 /** Pontos do catálogo cujo nome normalizado bate exatamente com o alvo. */
@@ -106,6 +107,7 @@ function PointMatchPicker({
   const [searching, setSearching] = useState(value.mode === "unresolved");
   const [search, setSearch] = useState("");
   const [newName, setNewName] = useState(defaultNewName);
+  const [newCategory, setNewCategory] = useState<"ADM" | "FTX">(value.mode === "new" ? value.category : "ADM");
 
   useEffect(() => { if (value.mode === "unresolved") setSearching(true); }, [value.mode]);
 
@@ -120,6 +122,7 @@ function PointMatchPicker({
     return (
       <div className="flex items-center gap-2 text-sm min-w-0">
         <Badge variant="success" className="shrink-0 gap-1"><Check className="h-3 w-3" /> ID {point?.external_id ?? value.pointId}</Badge>
+        {point && <Badge variant={point.category === "ADM" ? "secondary" : "outline"} className="shrink-0 text-xs">{point.category}</Badge>}
         <span className="truncate">{point?.name ?? `Ponto #${value.pointId}`}</span>
         <Button size="sm" variant="ghost" className="h-6 px-2 text-xs shrink-0" onClick={() => setSearching(true)}>Trocar</Button>
       </div>
@@ -130,6 +133,7 @@ function PointMatchPicker({
     return (
       <div className="flex items-center gap-2 text-sm min-w-0">
         <Badge variant="warning" className="shrink-0">Ponto novo</Badge>
+        <Badge variant={value.category === "ADM" ? "secondary" : "outline"} className="shrink-0 text-xs">{value.category}</Badge>
         <span className="truncate">{value.name}</span>
         <Button size="sm" variant="ghost" className="h-6 px-2 text-xs shrink-0" onClick={() => setSearching(true)}>Trocar</Button>
       </div>
@@ -147,7 +151,7 @@ function PointMatchPicker({
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Buscar ponto por nome ou ID…"
+          placeholder="Buscar ponto por nome ou ID (ADM e FTX)…"
           className="h-8 text-sm"
         />
         {value.mode !== "unresolved" && (
@@ -162,21 +166,37 @@ function PointMatchPicker({
             onClick={() => { onChange({ mode: "existing", pointId: c.id }); setSearching(false); }}
           >
             <span className="font-mono text-xs bg-muted px-1 rounded shrink-0">ID {c.external_id}</span>
+            <Badge variant={c.category === "ADM" ? "secondary" : "outline"} className="shrink-0 text-xs">{c.category}</Badge>
             <span className="truncate">{c.name}</span>
           </button>
         ))}
         {filtered.length === 0 && (
-          <p className="px-2 py-2 text-xs text-muted-foreground">Nenhum ponto encontrado no catálogo de {taxLabel}.</p>
+          <p className="px-2 py-2 text-xs text-muted-foreground">Nenhum ponto encontrado no catálogo de {taxLabel} (ADM ou FTX).</p>
         )}
       </div>
-      <div className="flex items-center gap-2">
-        <Input value={newName} onChange={(e) => setNewName(e.target.value)} className="h-8 text-sm flex-1" placeholder="Nome do novo ponto" />
+      <div className="space-y-1.5 border-t border-border pt-1.5">
+        <div className="flex items-center gap-2">
+          <Input value={newName} onChange={(e) => setNewName(e.target.value)} className="h-8 text-sm flex-1" placeholder="Nome do novo ponto" />
+          <div className="flex items-center gap-1 shrink-0 bg-muted rounded-md p-0.5">
+            {(["ADM", "FTX"] as const).map((cat) => (
+              <button
+                key={cat} type="button"
+                onClick={() => setNewCategory(cat)}
+                className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                  newCategory === cat ? "bg-card shadow-sm" : "text-muted-foreground"
+                }`}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+        </div>
         <Button
-          size="sm" variant="outline" className="h-8 text-xs shrink-0"
-          onClick={() => { onChange({ mode: "new", name: newName.trim() || defaultNewName }); setSearching(false); }}
+          size="sm" variant="outline" className="h-8 text-xs w-full"
+          onClick={() => { onChange({ mode: "new", name: newName.trim() || defaultNewName, category: newCategory }); setSearching(false); }}
           disabled={!newName.trim() && !defaultNewName.trim()}
         >
-          Criar novo ({taxLabel})
+          Criar novo ponto {taxLabel} — {newCategory}
         </Button>
       </div>
     </div>
@@ -208,8 +228,8 @@ export function IpiPontoImportWizard({
   const [result, setResult] = useState<{ inserted: number; pointName: string } | null>(null);
 
   const { data: candidates = [] } = useQuery({
-    queryKey: ["point-definitions", "ADM", "IPI", "CREDITO"],
-    queryFn: () => creditPointDefinitionsApi.list({ category: "ADM", tax: "IPI", nature: "CREDITO" }),
+    queryKey: ["point-definitions", "IPI", "CREDITO"],
+    queryFn: () => creditPointDefinitionsApi.list({ tax: "IPI", nature: "CREDITO" }),
     enabled: open,
   });
 
@@ -259,7 +279,7 @@ export function IpiPontoImportWizard({
       let pointId: number;
       let pointName: string;
       if (match.mode === "new") {
-        const created = await creditPointDefinitionsApi.quickCreate("ADM", "IPI", match.name);
+        const created = await creditPointDefinitionsApi.quickCreate(match.category, "IPI", match.name);
         pointId = created.id;
         pointName = created.name;
       } else {
@@ -405,8 +425,8 @@ export function IpiMultiImportWizard({
   const [results, setResults] = useState<IpiCommitOutcome[]>([]);
 
   const { data: candidates = [] } = useQuery({
-    queryKey: ["point-definitions", "ADM", "IPI", "CREDITO"],
-    queryFn: () => creditPointDefinitionsApi.list({ category: "ADM", tax: "IPI", nature: "CREDITO" }),
+    queryKey: ["point-definitions", "IPI", "CREDITO"],
+    queryFn: () => creditPointDefinitionsApi.list({ tax: "IPI", nature: "CREDITO" }),
     enabled: open,
   });
 
@@ -452,7 +472,7 @@ export function IpiMultiImportWizard({
         let pointId: number;
         let pointName: string;
         if (g.match.mode === "new") {
-          const created = await creditPointDefinitionsApi.quickCreate("ADM", "IPI", g.match.name);
+          const created = await creditPointDefinitionsApi.quickCreate(g.match.category, "IPI", g.match.name);
           pointId = created.id; pointName = created.name;
         } else if (g.match.mode === "existing") {
           const matchedId = g.match.pointId; // extraído para variável local: g.match.pointId dentro do .find() abaixo não narrowa (property access em objeto mutável)
@@ -606,8 +626,8 @@ export function IrCsllImportWizard({
   const [result, setResult] = useState<{ inserted: number } | null>(null);
 
   const { data: candidates = [] } = useQuery({
-    queryKey: ["point-definitions", "ADM", "IRPJ_CSLL", "CREDITO"],
-    queryFn: () => creditPointDefinitionsApi.list({ category: "ADM", tax: "IRPJ_CSLL", nature: "CREDITO" }),
+    queryKey: ["point-definitions", "IRPJ_CSLL", "CREDITO"],
+    queryFn: () => creditPointDefinitionsApi.list({ tax: "IRPJ_CSLL", nature: "CREDITO" }),
     enabled: open,
   });
 
@@ -655,7 +675,7 @@ export function IrCsllImportWizard({
         if (match.mode === "existing") {
           idByName.set(name, match.pointId);
         } else if (match.mode === "new") {
-          const created = await creditPointDefinitionsApi.quickCreate("ADM", "IRPJ_CSLL", match.name);
+          const created = await creditPointDefinitionsApi.quickCreate(match.category, "IRPJ_CSLL", match.name);
           idByName.set(name, created.id);
         }
       }
@@ -718,6 +738,256 @@ export function IrCsllImportWizard({
                     onChange={(m) => updateMatch(name, m)}
                     defaultNewName={name}
                     taxLabel="IRPJ/CSLL"
+                  />
+                </div>
+              ))}
+            </div>
+
+            {parseWarnings.length > 0 && (
+              <ul className="text-xs text-warning space-y-1">
+                {parseWarnings.map((w, i) => <li key={i}>⚠ {w}</li>)}
+              </ul>
+            )}
+            <div className="flex justify-between pt-2">
+              <Button variant="outline" onClick={() => setStep("source")}><ArrowLeft className="h-4 w-4" /> Voltar</Button>
+              <Button onClick={handleCommit} disabled={committing || parsedRows.length === 0 || unresolvedCount > 0}>
+                {committing ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                Importar {parsedRows.length} valor(es)
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {step === "done" && result && (
+          <div className="flex flex-col items-center gap-3 py-10 text-center">
+            <CheckCircle2 className="h-10 w-10 text-success" />
+            <p className="font-medium">{result.inserted} valor(es) importado(s) em {pointNames.length} ponto(s).</p>
+            <Button onClick={() => handleClose(false)}>Concluir</Button>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// InssImportWizard — 1 arquivo = N pontos, lidos da aba "Totais" (anual,
+// valor único por ponto, sem split). Único wizard com o toggle "usar ordem
+// dos pontos como respaldo": a base de pontos de INSS ("Pontos_Prev") não
+// tem um ID_PONTO de origem confiável, então quando um nome não bate
+// exatamente com o catálogo, e o toggle está ligado, tenta achar pelo NOME
+// ESPERADO naquela posição da planilha-padrão (INSS_TOTAIS_TEMPLATE_ORDER,
+// construído a partir de exports reais de dois clientes diferentes — mesma
+// ordem nos dois). Isso NUNCA cria ou decide nada sozinho: só pré-seleciona
+// um candidato que o usuário ainda vê e pode trocar antes de confirmar.
+// ═════════════════════════════════════════════════════════════════════════
+
+type InssStep = "source" | "match" | "done";
+const INSS_STEP_ORDER: InssStep[] = ["source", "match", "done"];
+const INSS_STEP_LABEL: Record<InssStep, string> = { source: "Arquivo", match: "Conferir pontos", done: "Concluído" };
+
+export interface InssResolvedRow {
+  credit_point_definition_id: number;
+  reference_year: number;
+  value: number;
+}
+
+export function InssImportWizard({
+  open, onOpenChange, onCommit,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCommit: (rows: InssResolvedRow[]) => Promise<{ inserted: number }>;
+}) {
+  const [step, setStep] = useState<InssStep>("source");
+  const [parsedRows, setParsedRows] = useState<ParsedInssRow[]>([]);
+  const [pointNames, setPointNames] = useState<string[]>([]);
+  const [parseWarnings, setParseWarnings] = useState<string[]>([]);
+  const [matches, setMatches] = useState<Record<string, MatchSelection>>({});
+  const [orderMatchedNames, setOrderMatchedNames] = useState<Set<string>>(new Set());
+  const [useOrderFallback, setUseOrderFallback] = useState(false);
+  const [committing, setCommitting] = useState(false);
+  const [result, setResult] = useState<{ inserted: number } | null>(null);
+
+  const { data: candidates = [] } = useQuery({
+    queryKey: ["point-definitions", "INSS", "CREDITO"],
+    queryFn: () => creditPointDefinitionsApi.list({ tax: "INSS", nature: "CREDITO" }),
+    enabled: open,
+  });
+
+  function reset() {
+    setStep("source"); setParsedRows([]); setPointNames([]); setParseWarnings([]);
+    setMatches({}); setOrderMatchedNames(new Set()); setUseOrderFallback(false); setResult(null);
+  }
+  function handleClose(next: boolean) { if (!next) reset(); onOpenChange(next); }
+
+  function recomputeMatches(names: string[], withOrderFallback: boolean) {
+    const nextMatches: Record<string, MatchSelection> = {};
+    const viaOrder = new Set<string>();
+
+    names.forEach((name, idx) => {
+      const exact = findExactMatches(candidates, name);
+      if (exact.length === 1) {
+        nextMatches[name] = { mode: "existing", pointId: exact[0].id };
+        return;
+      }
+
+      if (withOrderFallback) {
+        // idx é 0-based (posição da linha no arquivo); a lista canônica usa
+        // "position" 1-based na mesma ordem — por isso INSS_TOTAIS_TEMPLATE_ORDER[idx].
+        const templateEntry = INSS_TOTAIS_TEMPLATE_ORDER[idx];
+        const byExternalId = templateEntry?.externalId
+          ? candidates.find((c) => c.external_id === templateEntry.externalId)
+          : undefined;
+        if (byExternalId) {
+          nextMatches[name] = { mode: "existing", pointId: byExternalId.id };
+          viaOrder.add(name);
+          return;
+        }
+      }
+
+      nextMatches[name] = { mode: "unresolved" };
+    });
+
+    setMatches(nextMatches);
+    setOrderMatchedNames(viaOrder);
+  }
+
+  async function handleFile(file: File) {
+    try {
+      const grid = await parseXlsxNamedSheetMatrixKeepBlanks(file, ["Totais"]);
+      const res = parseInssTotais(grid);
+      setParsedRows(res.rows);
+      setPointNames(res.pointNames);
+      setParseWarnings(res.warnings);
+      res.warnings.forEach((w) => toast.warning(w));
+      recomputeMatches(res.pointNames, useOrderFallback);
+      setStep("match");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Não foi possível ler a aba "Totais" do arquivo.');
+    }
+  }
+
+  function handleToggleOrderFallback(checked: boolean) {
+    setUseOrderFallback(checked);
+    recomputeMatches(pointNames, checked);
+  }
+
+  function updateMatch(name: string, match: MatchSelection) {
+    setMatches((m) => ({ ...m, [name]: match }));
+    setOrderMatchedNames((s) => {
+      if (!s.has(name)) return s;
+      const next = new Set(s);
+      next.delete(name);
+      return next;
+    });
+  }
+
+  const unresolvedCount = pointNames.filter((n) => (matches[n]?.mode ?? "unresolved") === "unresolved").length;
+
+  async function handleCommit() {
+    if (parsedRows.length === 0) { toast.error("Nenhum valor para importar."); return; }
+    if (unresolvedCount > 0) {
+      toast.error(`${unresolvedCount} ponto(s) ainda não confirmado(s). Resolva todos antes de importar.`);
+      return;
+    }
+
+    setCommitting(true);
+    try {
+      const idByName = new Map<string, number>();
+      for (const name of pointNames) {
+        const match = matches[name];
+        if (match.mode === "existing") {
+          idByName.set(name, match.pointId);
+        } else if (match.mode === "new") {
+          const created = await creditPointDefinitionsApi.quickCreate(match.category, "INSS", match.name);
+          idByName.set(name, created.id);
+        }
+      }
+
+      const finalRows: InssResolvedRow[] = parsedRows
+        .map((r) => {
+          const id = idByName.get(r.point_name);
+          if (!id) return null;
+          return { credit_point_definition_id: id, reference_year: r.reference_year, value: r.value };
+        })
+        .filter((r): r is InssResolvedRow => r !== null);
+
+      const res = await onCommit(finalRows);
+      setResult(res);
+      setStep("done");
+      toast.success(`${res.inserted} valor(es) importado(s) em ${pointNames.length} ponto(s).`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Erro ao importar os dados de INSS.");
+    } finally {
+      setCommitting(false);
+    }
+  }
+
+  const stepIndex = INSS_STEP_ORDER.indexOf(step);
+  const yearsCount = new Set(parsedRows.map((r) => r.reference_year)).size;
+
+  return (
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader><DialogTitle>Importar Pontos INSS</DialogTitle></DialogHeader>
+
+        <WizardSteps steps={INSS_STEP_ORDER} labels={INSS_STEP_LABEL} currentIndex={stepIndex} />
+
+        {step === "source" && (
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">
+              Envie a planilha completa de INSS do job. Os valores são lidos automaticamente <strong>só da
+              aba "Totais"</strong> — as demais abas (memória de cálculo de cada ponto) não são lidas. Não é
+              possível colar texto para este formato, envie o arquivo original.
+            </p>
+            <FileDropzone onFile={handleFile} />
+          </div>
+        )}
+
+        {step === "match" && (
+          <div className="space-y-4 py-2">
+            <label className="flex items-start gap-3 text-sm border border-border rounded-lg p-3 bg-muted/30 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4"
+                checked={useOrderFallback}
+                onChange={(e) => handleToggleOrderFallback(e.target.checked)}
+              />
+              <span>
+                <span className="font-medium">Usar ordem dos pontos como respaldo</span>
+                <br />
+                <span className="text-muted-foreground text-xs">
+                  Quando um nome não bate exatamente com nenhum ponto do catálogo, tenta achar pelo nome
+                  esperado naquela posição da planilha-padrão (ex.: a 1ª linha de pontos é sempre "RATxFAP",
+                  a 2ª é sempre "Desoneração da Folha", e assim por diante). Só ajuda se esta planilha seguir
+                  a mesma ordem do padrão — desligue se desconfiar que os pontos foram reordenados neste
+                  arquivo. Pontos preenchidos assim ficam marcados "via ordem" e continuam editáveis.
+                </span>
+              </span>
+            </label>
+
+            <p className="text-sm">
+              <strong>{pointNames.length}</strong> ponto(s) encontrados na aba "Totais", cobrindo{" "}
+              <strong>{yearsCount}</strong> ano(s) — total de <strong>{parsedRows.length}</strong> valores.
+              {unresolvedCount > 0 && <span className="text-amber-600"> · {unresolvedCount} pendente(s) de confirmação</span>}
+            </p>
+
+            <div className="border border-border rounded-lg divide-y divide-border max-h-[50vh] overflow-auto">
+              {pointNames.map((name) => (
+                <div key={name} className="px-3 py-2.5 space-y-2">
+                  <p className="text-sm font-medium flex items-center gap-2">
+                    {name}
+                    {orderMatchedNames.has(name) && (
+                      <Badge variant="outline" className="text-xs">via ordem</Badge>
+                    )}
+                  </p>
+                  <PointMatchPicker
+                    candidates={candidates}
+                    value={matches[name] ?? { mode: "unresolved" }}
+                    onChange={(m) => updateMatch(name, m)}
+                    defaultNewName={name}
+                    taxLabel="INSS"
                   />
                 </div>
               ))}

@@ -31,6 +31,19 @@ function normalize(s: string): string {
 /**
  * Lê um arquivo .xlsx e retorna { headers, rows } a partir da linha `headerRow`
  * (1-based). Linhas antes de headerRow (metadados) são descartadas.
+ *
+ * IMPORTANTE: lê com `blankrows: true` (preserva linhas em branco) até
+ * localizar a linha de cabeçalho. As planilhas DARF/M400/M610 exportadas
+ * pelo sistema de origem têm uma linha totalmente em branco entre os
+ * metadados e o cabeçalho (linha 7, cabeçalho na linha 8) — se essa linha
+ * fosse removida ANTES de indexar por `headerRow` (como uma versão anterior
+ * deste código fazia, com `blankrows: false`), o índice calculado a partir
+ * do número da linha do Excel deixaria de bater com a posição real no
+ * array, e o cabeçalho lido seria na verdade a 1ª linha de dado — corrompendo
+ * tanto o mapeamento por nome (os "cabeçalhos" virariam valores como
+ * "012021", sem bater com nenhum matchHint) quanto por ordem. Linhas em
+ * branco só são filtradas DEPOIS, e apenas dentre as linhas de DADO
+ * (nunca antes de localizar o cabeçalho).
  */
 export async function parseXlsxFile(
   file: File,
@@ -41,12 +54,11 @@ export async function parseXlsxFile(
   const sheetName = workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetName];
 
-  // Converte a planilha inteira em matriz de strings, célula a célula.
   const matrix: string[][] = XLSX.utils.sheet_to_json<string[]>(sheet, {
     header: 1,
     raw: false,
     defval: "",
-    blankrows: false,
+    blankrows: true,
   });
 
   const headerIdx = Math.max(0, headerRow - 1);
@@ -55,7 +67,7 @@ export async function parseXlsxFile(
 
   const headers = headerLine.map((h) => String(h ?? "").trim());
   const rows = dataLines
-    .map((r) => headers.map((_, i) => String(r[i] ?? "").trim()))
+    .map((r) => headers.map((_, i) => String((r ?? [])[i] ?? "").trim()))
     .filter((r) => r.some((c) => c !== ""));
 
   return { headers, rows };
@@ -125,7 +137,13 @@ export async function parseXlsxNamedSheetMatrixKeepBlanks(
 
 /**
  * Interpreta texto colado (TSV, como copiado do Excel) a partir da linha
- * `headerRow` (1-based). Linhas em branco são ignoradas na contagem.
+ * `headerRow` (1-based).
+ *
+ * Mesma observação de parseXlsxFile: linhas em branco só são filtradas
+ * DEPOIS de localizar o cabeçalho pelo número da linha (nunca antes) — do
+ * contrário, colar um bloco que inclua a linha em branco entre metadados e
+ * cabeçalho (comum ao colar o intervalo inteiro do Excel) deslocaria o
+ * índice e faria o código ler a 1ª linha de dado como se fosse cabeçalho.
  */
 export function parsePastedText(
   text: string,
@@ -134,12 +152,11 @@ export function parsePastedText(
   const lines = text
     .replace(/\r/g, "")
     .split("\n")
-    .map((l) => l.split("\t").map((c) => c.trim()))
-    .filter((l) => l.some((c) => c !== ""));
+    .map((l) => l.split("\t").map((c) => c.trim()));
 
   const headerIdx = Math.max(0, headerRow - 1);
   const headers = lines[headerIdx] ?? [];
-  const dataLines = lines.slice(headerIdx + 1);
+  const dataLines = lines.slice(headerIdx + 1).filter((l) => l.some((c) => c !== ""));
 
   const rows = dataLines.map((r) => headers.map((_, i) => r[i] ?? ""));
 
@@ -204,6 +221,14 @@ export function autoMapColumns(
   const mapping: Record<string, number | null> = {};
 
   for (const col of columns) {
+    // Colunas "ignore" existem só para alinhamento posicional (ver
+    // importConfigs.ts) — nunca fazem sentido buscar por nome, e não temos
+    // interesse em qual índice elas "ganhariam" nessa etapa.
+    if (col.kind === "ignore") {
+      mapping[col.key] = null;
+      continue;
+    }
+
     const candidates = [col.label, col.key, ...(col.matchHints ?? [])].map(normalize);
     let foundIdx: number | null = null;
 
@@ -345,6 +370,12 @@ export function buildPreview(
     const messages: string[] = [];
 
     for (const col of config.columns) {
+      // "ignore" existe só para o alinhamento posicional de "mapear pela
+      // ordem das colunas" (ex.: DATA_BASE do DARF, ANO/MES crus do
+      // M400/M610 já consumidos por reference_month) — o valor lido aqui
+      // nunca é necessário e NUNCA deve ir pro payload enviado ao backend.
+      if (col.kind === "ignore") continue;
+
       const idx = mapping[col.key];
       const rawValue = idx !== null && idx !== undefined ? (raw[idx] ?? "") : "";
 

@@ -153,6 +153,14 @@ export function DataViewerModal<T extends Record<string, unknown>>({
     [data]
   );
 
+  // Colunas "ignore" (ver importConfigs.ts) nunca chegam a existir nos
+  // registros já salvos no banco — não faz sentido mostrar uma coluna vazia
+  // para elas aqui.
+  const visibleColumns = useMemo(
+    () => config.columns.filter((c) => c.kind !== "ignore").map((c) => ({ key: c.key, label: c.label })),
+    [config.columns]
+  );
+
   return (
     <>
       <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
@@ -168,7 +176,7 @@ export function DataViewerModal<T extends Record<string, unknown>>({
           ) : data.length === 0 ? (
             <p className="text-sm text-muted-foreground py-6 text-center">Nenhum dado importado ainda.</p>
           ) : (
-            <DataPreviewTable columns={config.columns.map((c) => ({ key: c.key, label: c.label }))} rows={rows} />
+            <DataPreviewTable columns={visibleColumns} rows={rows} />
           )}
         </DialogContent>
       </Dialog>
@@ -176,7 +184,7 @@ export function DataViewerModal<T extends Record<string, unknown>>({
   );
 }
 
-// ─── Modal de visualização genérico (Pontos ADM/FTX) ────────────────────────
+// ─── Modal de visualização genérico (Pontos ADM/FTX/IPI/IR-CSLL) ────────────
 
 export function GenericDataViewerModal({
   title, queryKey, fetcher, columns,

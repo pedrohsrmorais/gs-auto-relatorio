@@ -17,18 +17,19 @@ type Category = "ADM" | "FTX";
 const CATEGORY_ORDER: Category[] = ["ADM", "FTX"];
 const CATEGORY_LABEL: Record<Category, string> = { ADM: "ADM", FTX: "FTX" };
 
-// Tributos disponíveis por categoria. FTX hoje só cobre PIS/COFINS (é o
-// que o software FinTax analisa); IPI e IR/CSLL só existem como análise
-// Administrativa (ADM) por enquanto.
+// Tributos disponíveis por categoria. IPI e IRPJ/CSLL existem tanto em ADM
+// quanto em FTX no catálogo (a planilha mestre Fintax já traz pontos
+// IRPJ/CSLL com cor de risco) — por isso aparecem nas duas.
 const TAXES_BY_CATEGORY: Record<Category, DiagnosticTax[]> = {
-  ADM: ["PIS_COFINS", "IPI", "IRPJ_CSLL"],
-  FTX: ["PIS_COFINS"],
+  ADM: ["PIS_COFINS", "IPI", "IRPJ_CSLL", "INSS"],
+  FTX: ["PIS_COFINS", "IPI", "IRPJ_CSLL", "INSS"],
 };
 
 const TAX_LABEL: Record<DiagnosticTax, string> = {
   PIS_COFINS: "PIS/COFINS",
   IPI: "IPI",
   IRPJ_CSLL: "IR/CSLL",
+  INSS: "INSS",
 };
 
 const TAX_DESCRIPTION: Record<Category, Record<DiagnosticTax, string>> = {
@@ -36,11 +37,13 @@ const TAX_DESCRIPTION: Record<Category, Record<DiagnosticTax, string>> = {
     PIS_COFINS: "Valores consolidados por ponto. Clique no nome do ponto para ver o detalhamento mês a mês.",
     IPI: "Valores consolidados por ponto de IPI (mensal, sem separação PIS/COFINS). Clique no ponto para ver o detalhamento mês a mês.",
     IRPJ_CSLL: "Valores consolidados por ponto de IRPJ/CSLL (anual). Clique no ponto para ver o detalhamento por ano.",
+    INSS: "Valores consolidados por ponto de INSS (anual, sem split). Clique no ponto para ver o detalhamento por ano.",
   },
   FTX: {
     PIS_COFINS: "Valores consolidados por ponto, com a cor de risco cadastrada no catálogo global de pontos (Administração → Pontos). Clique no nome do ponto para ver o detalhamento mês a mês.",
-    IPI: "",
-    IRPJ_CSLL: "",
+    IPI: "Valores consolidados por ponto de IPI vindo do catálogo FTX (FinTax), mensal, sem separação PIS/COFINS.",
+    IRPJ_CSLL: "Valores consolidados por ponto de IRPJ/CSLL vindo do catálogo FTX (FinTax), anual. Clique no ponto para ver o detalhamento por ano.",
+    INSS: "Valores consolidados por ponto de INSS vindo do catálogo FTX, anual, com a cor de risco cadastrada em Administração → Pontos.",
   },
 };
 
@@ -147,7 +150,7 @@ function DetailModal({
   });
 
   const displayName = point ? (point.name?.trim() || `Ponto ${point.external_id}`) : "";
-  const periodLabel = tax === "IRPJ_CSLL" ? "Ano" : "Mês";
+  const periodLabel = (tax === "IRPJ_CSLL" || tax === "INSS") ? "Ano" : "Mês";
   const breakdownLabels = point?.breakdown.map((b) => b.label) ?? [];
 
   const totals = breakdownLabels.map((label) => ({
@@ -217,7 +220,7 @@ function PointsTable({ jobId, category, tax }: { jobId: number; category: Catego
     queryFn: () => diagnosticsApi.listPoints(jobId, category, tax),
   });
 
-  const showColor = category === "FTX" && tax === "PIS_COFINS";
+  const showColor = category === "FTX";
   const breakdownLabels = points[0]?.breakdown.map((b) => b.label) ?? [];
   const totals = breakdownLabels.map((label) => ({
     label,

@@ -104,6 +104,11 @@ router.get('/jobs/:jobId/pontos-ir-csll',              pontosController.listIrCs
 router.post('/jobs/:jobId/pontos-ir-csll/bulk-import', pontosController.bulkImportIrCsll);
 router.delete('/jobs/:jobId/pontos-ir-csll',           pontosController.clearIrCsll);
 
+// Pontos INSS (valores anuais por job, 1 arquivo = N pontos, sem split)
+router.get('/jobs/:jobId/pontos-inss',                 pontosController.listInss);
+router.post('/jobs/:jobId/pontos-inss/bulk-import',    pontosController.bulkImportInss);
+router.delete('/jobs/:jobId/pontos-inss',              pontosController.clearInss);
+
 // Definições de pontos (catálogo global — nome, cor de risco, tributo e natureza)
 router.get('/credit-point-definitions',                pontosController.listDefinitions);
 router.patch('/credit-point-definitions/:id',          pontosController.updateDefinitionName);

@@ -272,7 +272,7 @@ export function ImportWizard({
             </label>
 
             <div className="grid grid-cols-2 gap-3 max-h-[40vh] overflow-auto pr-1">
-              {config.columns.map((col) => (
+              {config.columns.filter((col) => col.kind !== "ignore").map((col) => (
                 <div key={col.key} className="space-y-1.5">
                   <label className="text-xs font-medium flex items-center gap-1">
                     {col.label} {col.required && <span className="text-destructive">*</span>}
@@ -304,7 +304,7 @@ export function ImportWizard({
               <span className="text-success">Válidas: <strong>{preview.validRows}</strong></span>
               <span className="text-destructive">Com erro: <strong>{preview.errorRows}</strong></span>
             </div>
-            <DataPreviewTable columns={config.columns.map((c) => ({ key: c.key, label: c.label }))} rows={preview.rows} />
+            <DataPreviewTable columns={config.columns.filter((c) => c.kind !== "ignore").map((c) => ({ key: c.key, label: c.label }))} rows={preview.rows} />
             {preview.errorRows > 0 && (
               <p className="text-xs text-muted-foreground">
                 Linhas com erro (em vermelho) serão ignoradas na importação. Corrija a planilha de origem e reenvie se quiser incluí-las.

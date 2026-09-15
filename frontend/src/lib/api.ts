@@ -321,7 +321,7 @@ export const jobDiagnosticApi = {
 // ─── diagnóstico por ponto (ADM/FTX x PIS_COFINS/IPI/IRPJ_CSLL) ──────────────
 
 export type DiagnosticCategory = "ADM" | "FTX";
-export type DiagnosticTax = "PIS_COFINS" | "IPI" | "IRPJ_CSLL";
+export type DiagnosticTax = "PIS_COFINS" | "IPI" | "IRPJ_CSLL" | "INSS";
 
 export interface DiagnosticBreakdownItem {
   label: string;
@@ -577,6 +577,37 @@ export const pontosIrCsllApi = {
   },
   async clearAll(jobId: number) {
     const res = await http.delete<{ data: { deleted: number } }>(`/jobs/${jobId}/pontos-ir-csll`);
+    return res.data.data;
+  },
+};
+
+// ─── Pontos INSS (valores anuais por job, 1 arquivo = N pontos, sem split) ───
+// Cada linha já vem com o ponto RESOLVIDO (credit_point_definition_id) —
+// ver InssImportWizard em IpiIrCsllWizards.tsx.
+
+export interface InssValueRow {
+  credit_point_definition_id: number;
+  reference_year: number;
+  value: number;
+}
+
+export interface InssImportResult {
+  inserted: number;
+}
+
+export const pontosInssApi = {
+  async list(jobId: number) {
+    const res = await http.get<{ data: Record<string, unknown>[] }>(`/jobs/${jobId}/pontos-inss`);
+    return res.data.data;
+  },
+  async bulkImport(jobId: number, rows: InssValueRow[]) {
+    const res = await http.post<{ data: InssImportResult }>(
+      `/jobs/${jobId}/pontos-inss/bulk-import`, { rows }
+    );
+    return res.data.data;
+  },
+  async clearAll(jobId: number) {
+    const res = await http.delete<{ data: { deleted: number } }>(`/jobs/${jobId}/pontos-inss`);
     return res.data.data;
   },
 };
