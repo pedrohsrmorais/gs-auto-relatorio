@@ -2,6 +2,10 @@ import axios, { AxiosError } from "axios";
 import type {
   User, Client, Job, JobDetail, JobDiagnostic, PaginatedResponse, Role, TaxRegime, JobStatus,
 } from "@/lib/types";
+
+// Re-exporta os tipos de @/lib/types que outros módulos (ex: $jobId.tsx)
+// importam de "@/lib/api" por convenção.
+export type { User, Client, Job, JobDetail, JobDiagnostic, PaginatedResponse, Role, TaxRegime, JobStatus };
 import type { ParsedPontoMonthlyRow, ParsedIpiMonthlyRow } from "@/lib/import/customParsers";
 
 // ─── Erro tipado ──────────────────────────────────────────────────────────────
@@ -64,10 +68,7 @@ async function refreshAccessToken(): Promise<string | null> {
         tokenStorage.setRefreshToken(newRefresh);
         return newAccess as string;
       })
-      .catch(() => {
-        tokenStorage.clear();
-        return null;
-      })
+      .catch(() => { tokenStorage.clear(); return null; })
       .finally(() => { refreshPromise = null; });
   }
   return refreshPromise;
@@ -154,7 +155,7 @@ export const usersApi = {
   },
 };
 
-// ─── credit point definitions (catálogo global de pontos ADM/FTX) ────────────
+// ─── credit point definitions ─────────────────────────────────────────────────
 
 export type TaxCode = "PIS_COFINS" | "IRPJ_CSLL" | "INSS" | "IPI" | "ICMS";
 export type PointNature = "CREDITO" | "PASSIVO";
@@ -176,13 +177,6 @@ export interface DefinitionImportRow {
   external_id: string;
   name: string;
   risk_color?: "VERDE" | "AMARELO" | "VERMELHO" | null;
-  /**
-   * Tributo/natureza DESTA linha específica — as planilhas mestre (PRT para
-   * ADM, Fintax para FTX) trazem uma coluna NOME TRIBUTO por linha, então
-   * cada ponto pode ter um tributo diferente dentro do MESMO arquivo.
-   * Quando ausente, o backend usa o `defaultTaxCode`/`nature` passados para
-   * bulkImport como fallback (útil só para planilhas sem essa coluna).
-   */
   tax_code?: TaxCode;
   nature?: PointNature;
 }
@@ -211,11 +205,6 @@ export const creditPointDefinitionsApi = {
     const res = await http.patch<{ data: PointDefinition }>(`/credit-point-definitions/${id}`, { tax_code: taxCode });
     return res.data.data;
   },
-  /**
-   * `defaultTaxCode`/`defaultNature` são só FALLBACK — se as `rows` já
-   * trouxerem `tax_code`/`nature` próprios (planilhas PRT/Fintax, que têm
-   * coluna NOME TRIBUTO), o valor de cada linha prevalece.
-   */
   async bulkImport(
     category: "ADM" | "FTX",
     rows: DefinitionImportRow[],
@@ -228,15 +217,9 @@ export const creditPointDefinitionsApi = {
     );
     return res.data.data;
   },
-  /** Bloqueado pelo backend (409) se o ponto já tiver valores importados em algum job. */
   async remove(id: number) {
     await http.delete(`/credit-point-definitions/${id}`);
   },
-  /**
-   * Cria UM ponto manualmente — usado pelos wizards de IPI/IR-CSLL quando o
-   * usuário confirma explicitamente que o ponto não existe no catálogo.
-   * Nunca é chamado automaticamente/silenciosamente.
-   */
   async quickCreate(category: "ADM" | "FTX", taxCode: TaxCode, name: string, nature: PointNature = "CREDITO") {
     const res = await http.post<{ data: { id: number; name: string; external_id: string } }>(
       "/credit-point-definitions/quick-create",
@@ -244,12 +227,6 @@ export const creditPointDefinitionsApi = {
     );
     return res.data.data;
   },
-  /**
-   * Apaga TODOS os pontos do catálogo global E todos os valores já
-   * importados em QUALQUER job (pontos_adm/ftx/ipi/ir_csll, observações).
-   * Destrutivo e irreversível — sempre confirme explicitamente com o
-   * usuário antes de chamar isso.
-   */
   async resetAll(): Promise<{ deleted: Record<string, number> }> {
     const res = await http.delete<{ data: { deleted: Record<string, number> } }>("/credit-point-definitions");
     return res.data.data;
@@ -300,7 +277,7 @@ export const jobsApi = {
   },
 };
 
-// ─── diagnóstico do job (1:1 — campos gerais, ex: parecer geral do job) ──────
+// ─── diagnóstico do job (1:1) ─────────────────────────────────────────────────
 
 export const jobDiagnosticApi = {
   async get(jobId: number): Promise<JobDiagnostic | null> {
@@ -318,7 +295,7 @@ export const jobDiagnosticApi = {
   },
 };
 
-// ─── diagnóstico por ponto (ADM/FTX x PIS_COFINS/IPI/IRPJ_CSLL) ──────────────
+// ─── diagnóstico por ponto ────────────────────────────────────────────────────
 
 export type DiagnosticCategory = "ADM" | "FTX";
 export type DiagnosticTax = "PIS_COFINS" | "IPI" | "IRPJ_CSLL" | "INSS";
@@ -336,8 +313,9 @@ export interface DiagnosticPointSummary {
   total: number;
   breakdown: DiagnosticBreakdownItem[];
   observations: string | null;
-  // Campos legados (só vêm preenchidos quando tax=PIS_COFINS, mantidos
-  // para não quebrar código existente que ainda lê pis_total/cofins_total).
+  /** true quando o ponto foi marcado como "OK" no módulo Resultado */
+  confirmed: boolean;
+  // Campos legados (só vêm quando tax=PIS_COFINS ou IRPJ_CSLL)
   pis_total?: number;
   cofins_total?: number;
   irpj_total?: number;
@@ -376,11 +354,65 @@ export const diagnosticsApi = {
   },
 };
 
-// ─── tipos de dados das fontes brutas ────────────────────────────────────────
+// ─── resultado ────────────────────────────────────────────────────────────────
+
+export const resultadoApi = {
+  /** Marca/desmarca um ponto como "OK" para entrar na apresentação final. */
+  async toggleConfirm(
+    jobId: number,
+    creditPointDefinitionId: number,
+    confirmed: boolean
+  ): Promise<{ credit_point_definition_id: number; confirmed: boolean }> {
+    const res = await http.patch<{ data: { credit_point_definition_id: number; confirmed: boolean } }>(
+      `/jobs/${jobId}/resultado/points/${creditPointDefinitionId}`,
+      { confirmed }
+    );
+    return res.data.data;
+  },
+
+  async getSummary(jobId: number): Promise<{
+    adm: Record<string, { name: string; total: number }[]>;
+    ftx: Record<string, { name: string; total: number; risk_color: string | null }[]>;
+  }> {
+    const res = await http.get<{ data: unknown }>(`/jobs/${jobId}/resultado/summary`);
+    return res.data.data as any;
+  },
+
+  /**
+   * Gera a apresentação final (.pptx) e dispara o download no navegador.
+   * Trata erros 4xx que chegam como Blob quando responseType=blob.
+   */
+  async generatePpt(jobId: number, jobNumber?: string): Promise<void> {
+    let res;
+    try {
+      res = await http.post(`/jobs/${jobId}/resultado/gerar-ppt`, {}, { responseType: "blob" });
+    } catch (err) {
+      if (err instanceof AxiosError && err.response?.data instanceof Blob) {
+        const text = await err.response.data.text();
+        let message = "Erro ao gerar a apresentação.";
+        try { message = JSON.parse(text)?.message ?? message; } catch { /* não era JSON */ }
+        throw new ApiError(err.response.status, message);
+      }
+      throw err;
+    }
+
+    const blob = new Blob([res.data], {
+      type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Resultado_${jobNumber ?? jobId}.pptx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  },
+};
+
+// ─── fontes brutas ────────────────────────────────────────────────────────────
 
 import type { Perdcomp, DarfEntry, SpedM400Entry, SpedM610Entry } from "@/lib/types";
-
-// ─── PER/DCOMP ────────────────────────────────────────────────────────────────
 
 export const perdcompApi = {
   async list(jobId: number): Promise<Perdcomp[]> {
@@ -391,16 +423,12 @@ export const perdcompApi = {
     const res = await http.post<{ data: { inserted: number } }>(`/jobs/${jobId}/perdcomps/bulk-import`, { rows });
     return res.data.data;
   },
-  async remove(jobId: number, id: number) {
-    await http.delete(`/jobs/${jobId}/perdcomps/${id}`);
-  },
+  async remove(jobId: number, id: number) { await http.delete(`/jobs/${jobId}/perdcomps/${id}`); },
   async clearAll(jobId: number) {
     const res = await http.delete<{ data: { deleted: number } }>(`/jobs/${jobId}/perdcomps`);
     return res.data.data;
   },
 };
-
-// ─── DARF ─────────────────────────────────────────────────────────────────────
 
 export const darfApi = {
   async list(jobId: number): Promise<DarfEntry[]> {
@@ -411,16 +439,12 @@ export const darfApi = {
     const res = await http.post<{ data: { inserted: number } }>(`/jobs/${jobId}/darf-entries/bulk-import`, { rows });
     return res.data.data;
   },
-  async remove(jobId: number, id: number) {
-    await http.delete(`/jobs/${jobId}/darf-entries/${id}`);
-  },
+  async remove(jobId: number, id: number) { await http.delete(`/jobs/${jobId}/darf-entries/${id}`); },
   async clearAll(jobId: number) {
     const res = await http.delete<{ data: { deleted: number } }>(`/jobs/${jobId}/darf-entries`);
     return res.data.data;
   },
 };
-
-// ─── SPED M400 ────────────────────────────────────────────────────────────────
 
 export const spedM400Api = {
   async list(jobId: number): Promise<SpedM400Entry[]> {
@@ -431,16 +455,12 @@ export const spedM400Api = {
     const res = await http.post<{ data: { inserted: number } }>(`/jobs/${jobId}/sped/m400/bulk-import`, { rows });
     return res.data.data;
   },
-  async remove(jobId: number, id: number) {
-    await http.delete(`/jobs/${jobId}/sped/m400/${id}`);
-  },
+  async remove(jobId: number, id: number) { await http.delete(`/jobs/${jobId}/sped/m400/${id}`); },
   async clearAll(jobId: number) {
     const res = await http.delete<{ data: { deleted: number } }>(`/jobs/${jobId}/sped/m400`);
     return res.data.data;
   },
 };
-
-// ─── SPED M610 ────────────────────────────────────────────────────────────────
 
 export const spedM610Api = {
   async list(jobId: number): Promise<SpedM610Entry[]> {
@@ -451,23 +471,18 @@ export const spedM610Api = {
     const res = await http.post<{ data: { inserted: number } }>(`/jobs/${jobId}/sped/m610/bulk-import`, { rows });
     return res.data.data;
   },
-  async remove(jobId: number, id: number) {
-    await http.delete(`/jobs/${jobId}/sped/m610/${id}`);
-  },
+  async remove(jobId: number, id: number) { await http.delete(`/jobs/${jobId}/sped/m610/${id}`); },
   async clearAll(jobId: number) {
     const res = await http.delete<{ data: { deleted: number } }>(`/jobs/${jobId}/sped/m610`);
     return res.data.data;
   },
 };
 
-// ─── Pontos ADM (valores mensais por job, PIS/COFINS) ────────────────────────
-
 export interface PontoImportGroup {
   external_point_id: string;
   rows: ParsedPontoMonthlyRow[];
   point_name?: string;
 }
-
 export interface PontoImportResult {
   inserted: number;
   pointName: string;
@@ -480,15 +495,11 @@ export const pontosAdmApi = {
     return res.data.data;
   },
   async bulkImport(jobId: number, rows: ParsedPontoMonthlyRow[]) {
-    const res = await http.post<{ data: PontoImportResult }>(
-      `/jobs/${jobId}/pontos-adm/bulk-import`, { rows }
-    );
+    const res = await http.post<{ data: PontoImportResult }>(`/jobs/${jobId}/pontos-adm/bulk-import`, { rows });
     return res.data.data;
   },
   async bulkImportGroups(jobId: number, groups: PontoImportGroup[]) {
-    const res = await http.post<{ data: PontoImportResult }>(
-      `/jobs/${jobId}/pontos-adm/bulk-import`, { groups }
-    );
+    const res = await http.post<{ data: PontoImportResult }>(`/jobs/${jobId}/pontos-adm/bulk-import`, { groups });
     return res.data.data;
   },
   async clearAll(jobId: number) {
@@ -497,23 +508,17 @@ export const pontosAdmApi = {
   },
 };
 
-// ─── Pontos FTX (valores mensais por job, PIS/COFINS) ────────────────────────
-
 export const pontosFtxApi = {
   async list(jobId: number) {
     const res = await http.get<{ data: Record<string, unknown>[] }>(`/jobs/${jobId}/pontos-ftx`);
     return res.data.data;
   },
   async bulkImport(jobId: number, rows: ParsedPontoMonthlyRow[]) {
-    const res = await http.post<{ data: PontoImportResult }>(
-      `/jobs/${jobId}/pontos-ftx/bulk-import`, { rows }
-    );
+    const res = await http.post<{ data: PontoImportResult }>(`/jobs/${jobId}/pontos-ftx/bulk-import`, { rows });
     return res.data.data;
   },
   async bulkImportGroups(jobId: number, groups: PontoImportGroup[]) {
-    const res = await http.post<{ data: PontoImportResult }>(
-      `/jobs/${jobId}/pontos-ftx/bulk-import`, { groups }
-    );
+    const res = await http.post<{ data: PontoImportResult }>(`/jobs/${jobId}/pontos-ftx/bulk-import`, { groups });
     return res.data.data;
   },
   async clearAll(jobId: number) {
@@ -522,14 +527,7 @@ export const pontosFtxApi = {
   },
 };
 
-// ─── Pontos ADM IPI (valores mensais por job, 1 arquivo = 1 ponto, sem split) ─
-// O ponto (credit_point_definition_id) já vem RESOLVIDO pelo wizard — o
-// usuário confirmou o match ou escolheu manualmente. Ver IpiIrCsllWizards.tsx.
-
-export interface IpiImportResult {
-  inserted: number;
-  pointName: string;
-}
+export interface IpiImportResult { inserted: number; pointName: string; }
 
 export const pontosIpiApi = {
   async list(jobId: number) {
@@ -549,20 +547,13 @@ export const pontosIpiApi = {
   },
 };
 
-// ─── Pontos ADM IR/CSLL (valores anuais por job, 1 arquivo = N pontos) ───────
-// Cada linha já vem com o ponto RESOLVIDO (credit_point_definition_id) —
-// ver IpiIrCsllWizards.tsx.
-
 export interface IrCsllValueRow {
   credit_point_definition_id: number;
   reference_year: number;
   tax_sub_type: "IRPJ" | "CSLL";
   value: number;
 }
-
-export interface IrCsllImportResult {
-  inserted: number;
-}
+export interface IrCsllImportResult { inserted: number; }
 
 export const pontosIrCsllApi = {
   async list(jobId: number) {
@@ -570,9 +561,7 @@ export const pontosIrCsllApi = {
     return res.data.data;
   },
   async bulkImport(jobId: number, rows: IrCsllValueRow[]) {
-    const res = await http.post<{ data: IrCsllImportResult }>(
-      `/jobs/${jobId}/pontos-ir-csll/bulk-import`, { rows }
-    );
+    const res = await http.post<{ data: IrCsllImportResult }>(`/jobs/${jobId}/pontos-ir-csll/bulk-import`, { rows });
     return res.data.data;
   },
   async clearAll(jobId: number) {
@@ -581,19 +570,12 @@ export const pontosIrCsllApi = {
   },
 };
 
-// ─── Pontos INSS (valores anuais por job, 1 arquivo = N pontos, sem split) ───
-// Cada linha já vem com o ponto RESOLVIDO (credit_point_definition_id) —
-// ver InssImportWizard em IpiIrCsllWizards.tsx.
-
 export interface InssValueRow {
   credit_point_definition_id: number;
   reference_year: number;
   value: number;
 }
-
-export interface InssImportResult {
-  inserted: number;
-}
+export interface InssImportResult { inserted: number; }
 
 export const pontosInssApi = {
   async list(jobId: number) {
@@ -601,9 +583,7 @@ export const pontosInssApi = {
     return res.data.data;
   },
   async bulkImport(jobId: number, rows: InssValueRow[]) {
-    const res = await http.post<{ data: InssImportResult }>(
-      `/jobs/${jobId}/pontos-inss/bulk-import`, { rows }
-    );
+    const res = await http.post<{ data: InssImportResult }>(`/jobs/${jobId}/pontos-inss/bulk-import`, { rows });
     return res.data.data;
   },
   async clearAll(jobId: number) {

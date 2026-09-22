@@ -43,13 +43,6 @@ export interface ImportTableConfig {
   title: string;
   description?: string;
   columns: ImportColumnDef[];
-  /**
-   * Linha (1-based) onde estão os cabeçalhos das colunas.
-   * Padrão: 1 (primeira linha já é o header).
-   * As planilhas exportadas do sistema fiscal (DARF/M400/M610) trazem um
-   * bloco de metadados (Empresa/Usuário/Data/Cruzamento/Código/Caminho) nas
-   * linhas 1–6, uma linha em branco, e o cabeçalho real na linha 8.
-   */
   defaultHeaderRow?: number;
 }
 
@@ -235,3 +228,234 @@ export const M610_CONFIG: ImportTableConfig = {
 export const ALL_IMPORT_CONFIGS: ImportTableConfig[] = [
   PERDCOMP_CONFIG, DARF_CONFIG, M400_CONFIG, M610_CONFIG,
 ];
+
+export const PERDCOMP_TAXLUMEN_CONFIG: ImportTableConfig = {
+  id: "perdcomp-taxlumen",
+  title: "PER/DCOMP (Taxlumen)",
+  description: "Importação no formato exportado pelo sistema Taxlumen.",
+  defaultHeaderRow: 1,
+  columns: [
+    {
+      key: "perdcomp_number",
+      label: "Número do PER/DCOMP",
+      kind: "text",
+      required: true,
+      matchHints: ["numero do per dcomp", "número do per/dcomp", "numero perdcomp", "perdcomp"],
+    },
+    {
+      key: "transmission_date",
+      label: "Data de Transmissão",
+      kind: "date",
+      required: false,
+      matchHints: ["data de transmissao", "data de transmissão", "data transmissao"],
+    },
+    {
+      key: "credit_type",
+      label: "Tipo de Crédito",
+      kind: "text",
+      required: false,
+      matchHints: ["tipo de credito", "tipo de crédito", "credito"],
+    },
+    {
+      key: "document_type",
+      label: "Tipo de Documento",
+      kind: "text",
+      required: false,
+      matchHints: ["tipo de documento", "documento"],
+    },
+    {
+      key: "status",
+      label: "Situação",
+      kind: "text",
+      required: false,
+      matchHints: ["situacao", "situação", "status"],
+    },
+  ],
+};
+
+export const M400_TAXLUMEN_CONFIG: ImportTableConfig = {
+  id: "sped-m400-taxlumen",
+  title: "SPED M400 (Taxlumen)",
+  description: "Formato Taxlumen — período como DD/MM/YYYY, estabelecimento via CNPJ.",
+  defaultHeaderRow: 1,
+  columns: [
+    {
+      key: "__ignore_cnpj",
+      label: "Coluna não utilizada (CNPJ)",
+      kind: "ignore",
+    },
+    {
+      key: "reference_month",
+      label: "Período",
+      kind: "month_period",
+      required: true,
+      matchHints: ["periodo", "período", "competencia", "competência"],
+    },
+    {
+      key: "cst",
+      label: "CST PIS",
+      kind: "text",
+      required: false,
+      matchHints: ["cst pis", "cst"],
+    },
+    {
+      key: "revenue_description",
+      label: "Descrição CST PIS",
+      kind: "text",
+      required: false,
+      matchHints: ["descricao cst pis", "descrição cst pis", "descricao cst", "descricao"],
+    },
+    {
+      key: "gross_revenue_value",
+      label: "Vlr Total Receita Bruta",
+      kind: "number",
+      required: false,
+      matchHints: ["vlr total receita bruta", "valor total receita bruta", "receita bruta"],
+    },
+    {
+      key: "accounting_account_code",
+      label: "Conta Contábil",
+      kind: "text",
+      required: false,
+      matchHints: ["conta contabil", "conta contábil"],
+    },
+    {
+      key: "__ignore_descricao_complementar",
+      label: "Coluna não utilizada (Descrição Complementar)",
+      kind: "ignore",
+    },
+  ],
+};
+
+export const M610_TAXLUMEN_CONFIG: ImportTableConfig = {
+  id: "sped-m610-taxlumen",
+  title: "SPED M610 (Taxlumen)",
+  description: "Formato Taxlumen — mês e ano em colunas separadas, nomes técnicos SPED.",
+  defaultHeaderRow: 1,
+  columns: [
+    {
+      key: "__ignore_ano",
+      label: "Coluna não utilizada (ANO)",
+      kind: "ignore",
+    },
+    {
+      key: "__ignore_mes",
+      label: "Coluna não utilizada (MÊS)",
+      kind: "ignore",
+    },
+    {
+      key: "establishment",
+      label: "Estabelecimento",
+      kind: "text",
+      required: false,
+      matchHints: ["estabelecimento"],
+    },
+    {
+      key: "contribution_code",
+      label: "COD_CONT",
+      kind: "text",
+      required: false,
+      matchHints: ["cod cont", "cod_cont", "codigo contribuicao", "código contribuição"],
+    },
+    {
+      key: "contribution_description",
+      label: "Descrição da Contribuição",
+      kind: "text",
+      required: false,
+      matchHints: ["descricao da contribuicao", "descrição da contribuição", "descricao contribuicao"],
+    },
+    {
+      key: "gross_revenue_value",
+      label: "VL_REC_BRT",
+      kind: "number",
+      required: false,
+      matchHints: ["vl rec brt", "vl_rec_brt", "receita bruta"],
+    },
+    {
+      key: "calculation_base_value",
+      label: "VL_BC_CONT",
+      kind: "number",
+      required: false,
+      matchHints: ["vl bc cont", "vl_bc_cont", "base de calculo", "base de cálculo"],
+    },
+    {
+      key: "pis_aliquot",
+      label: "ALIQ_COFINS",
+      kind: "number",
+      required: false,
+      matchHints: ["aliq cofins", "aliq_cofins", "aliquota cofins"],
+    },
+    {
+      key: "pis_quantity",
+      label: "QUANT_BC_COFINS",
+      kind: "number",
+      required: false,
+      matchHints: ["quant bc cofins", "quant_bc_cofins", "quantidade cofins"],
+    },
+    {
+      key: "pis_quantity_aliquot",
+      label: "ALIQ_COFINS_QUANT",
+      kind: "number",
+      required: false,
+      matchHints: ["aliq cofins quant", "aliq_cofins_quant"],
+    },
+    {
+      key: "total_contribution_calculated",
+      label: "VL_CONT_APUR",
+      kind: "number",
+      required: false,
+      matchHints: ["vl cont apur", "vl_cont_apur", "contribuicao apurada"],
+    },
+    {
+      key: "addition_adjustments_value",
+      label: "VL_AJUS_ACRES",
+      kind: "number",
+      required: false,
+      matchHints: ["vl ajus acres", "vl_ajus_acres"],
+    },
+    {
+      key: "reduction_adjustments_value",
+      label: "VL_AJUS_REDUC",
+      kind: "number",
+      required: false,
+      matchHints: ["vl ajus reduc", "vl_ajus_reduc"],
+    },
+    {
+      key: "deferred_contribution_value",
+      label: "VL_CONT_DIFER",
+      kind: "number",
+      required: false,
+      matchHints: ["vl cont difer", "vl_cont_difer"],
+    },
+    {
+      key: "previous_deferred_contribution_value",
+      label: "VL_CONT_DIFER_ANT",
+      kind: "number",
+      required: false,
+      matchHints: ["vl cont difer ant", "vl_cont_difer_ant"],
+    },
+    {
+      key: "total_period_contribution_value",
+      label: "VL_CONT_PER",
+      kind: "number",
+      required: false,
+      matchHints: ["vl cont per", "vl_cont_per"],
+    },
+    {
+      key: "bookkeeping_type",
+      label: "Tipo Escrituração",
+      kind: "text",
+      required: false,
+      matchHints: ["tipo escrituracao", "tipo de escrituracao", "tipo escrituração"],
+    },
+    // DEVE FICAR POR ÚLTIMO: preprocessCompositeDateColumns anexa
+    // "reference_month" no final do array de headers. Se essa coluna
+    // não for a última aqui, o mapeamento por ordem desalinha.
+    {
+      key: "reference_month",
+      label: "Mês de referência",
+      kind: "month_period",
+      required: true,
+    },
+  ],
+};

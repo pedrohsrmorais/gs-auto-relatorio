@@ -6,25 +6,23 @@ const { pool } = require('../config/database');
  * Tela de Diagnóstico do job. Duas dimensões de filtro:
  *
  *  - category: ADM | FTX            (de onde vem a análise)
- *  - tax:      PIS_COFINS | IPI | IRPJ_CSLL   (a qual tributo pertence)
+ *  - tax:      PIS_COFINS | IPI | IRPJ_CSLL | INSS  (a qual tributo pertence)
  *              (default: PIS_COFINS, para manter compatibilidade com
  *              chamadas antigas que não mandam ?tax=)
  *
  * Cada combinação aponta pra uma tabela de valores diferente:
  *   ADM/FTX + PIS_COFINS -> pontos_adm / pontos_ftx (mensal, split PIS/COFINS)
  *   ADM/FTX + IPI        -> pontos_ipi              (mensal, valor único)
- *   ADM/FTX + IRPJ_CSLL  -> pontos_ir_csll           (anual, split IRPJ/CSLL)
+ *   ADM/FTX + IRPJ_CSLL  -> pontos_ir_csll          (anual, split IRPJ/CSLL)
+ *   ADM/FTX + INSS       -> pontos_inss             (anual, valor único)
  *
- * IPI e IRPJ_CSLL existem tanto em ADM quanto em FTX no catálogo (ex.: a
- * planilha mestre Fintax traz pontos IRPJ/CSLL com cor de risco) — por isso
- * listPointsIpi/listPointsIrCsll filtram por category como qualquer outro
- * tributo, sem a restrição "só ADM" que existia antes.
+ * Todas as respostas de ponto incluem agora o campo `confirmed` (boolean),
+ * que reflete job_point_notes.confirmed_in_result — usado pelo módulo
+ * Resultado para saber quais pontos entram na apresentação final.
  *
- * O formato de resposta do resumo por ponto inclui SEMPRE `total`, e um
- * array `breakdown` com os componentes (PIS/COFINS, IRPJ/CSLL, ou vazio
- * para IPI que não tem split). Os campos legados `pis_total`/`cofins_total`
- * continuam sendo enviados quando tax=PIS_COFINS para não quebrar o
- * frontend existente.
+ * Este arquivo exporta também as funções internas de listagem
+ * (listPointsPisCofins, listPointsIpi, listPointsIrCsll, listPointsInss)
+ * para que resultado.controller.js as reutilize sem duplicar queries.
  * ===================================================================== */
 
 class ApiError extends Error {
@@ -72,9 +70,31 @@ async function logAction(req, { action, entityType = null, entityId = null, jobI
   }
 }
 
-// ═════════════════════════════════════════════════════════════════════════
-// PIS/COFINS — pontos_adm / pontos_ftx (mensal, split PIS/COFINS)
-// ═════════════════════════════════════════════════════════════════════════
+// ─── Helpers compartilhados pelas 4 funções de listagem ──────────────────────
+
+async function ensureNoteRowsExist(jobId, ids) {
+  if (!ids.length) return;
+  const values = ids.map((id) => [jobId, id]);
+  await pool.query(
+    `INSERT IGNORE INTO job_point_notes (job_id, credit_point_definition_id) VALUES ?`,
+    [values]
+  );
+}
+
+async function loadNotesById(jobId, ids) {
+  if (!ids.length) return new Map();
+  const [notes] = await pool.query(
+    `SELECT credit_point_definition_id, observations, confirmed_in_result
+     FROM job_point_notes
+     WHERE job_id = ? AND credit_point_definition_id IN (?)`,
+    [jobId, ids]
+  );
+  return new Map(notes.map((n) => [n.credit_point_definition_id, n]));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PIS/COFINS
+// ═══════════════════════════════════════════════════════════════════════
 
 function tableForCategory(category) {
   return category === 'ADM' ? 'pontos_adm' : 'pontos_ftx';
@@ -99,25 +119,9 @@ async function listPointsPisCofins(jobId, category) {
     [jobId]
   );
 
-  if (rows.length > 0) {
-    const values = rows.map((r) => [jobId, r.credit_point_definition_id]);
-    await pool.query(
-      `INSERT IGNORE INTO job_point_notes (job_id, credit_point_definition_id) VALUES ?`,
-      [values]
-    );
-  }
-
   const ids = rows.map((r) => r.credit_point_definition_id);
-  let notesById = new Map();
-  if (ids.length > 0) {
-    const [notes] = await pool.query(
-      `SELECT credit_point_definition_id, observations
-       FROM job_point_notes
-       WHERE job_id = ? AND credit_point_definition_id IN (?)`,
-      [jobId, ids]
-    );
-    notesById = new Map(notes.map((n) => [n.credit_point_definition_id, n]));
-  }
+  await ensureNoteRowsExist(jobId, ids);
+  const notesById = await loadNotesById(jobId, ids);
 
   return rows.map((r) => {
     const note = notesById.get(r.credit_point_definition_id);
@@ -136,6 +140,7 @@ async function listPointsPisCofins(jobId, category) {
         { label: 'COFINS', value: cofins },
       ],
       observations: note?.observations ?? null,
+      confirmed: !!note?.confirmed_in_result,
     };
   });
 }
@@ -163,9 +168,9 @@ async function getMonthlyPisCofins(jobId, category, creditPointDefinitionId) {
   }));
 }
 
-// ═════════════════════════════════════════════════════════════════════════
-// IPI — pontos_ipi (mensal, valor único, sem split)
-// ═════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// IPI
+// ═══════════════════════════════════════════════════════════════════════
 
 async function listPointsIpi(jobId, category) {
   const [rows] = await pool.query(
@@ -183,24 +188,9 @@ async function listPointsIpi(jobId, category) {
     [jobId, category]
   );
 
-  if (rows.length > 0) {
-    const values = rows.map((r) => [jobId, r.credit_point_definition_id]);
-    await pool.query(
-      `INSERT IGNORE INTO job_point_notes (job_id, credit_point_definition_id) VALUES ?`,
-      [values]
-    );
-  }
-
   const ids = rows.map((r) => r.credit_point_definition_id);
-  let notesById = new Map();
-  if (ids.length > 0) {
-    const [notes] = await pool.query(
-      `SELECT credit_point_definition_id, observations FROM job_point_notes
-       WHERE job_id = ? AND credit_point_definition_id IN (?)`,
-      [jobId, ids]
-    );
-    notesById = new Map(notes.map((n) => [n.credit_point_definition_id, n]));
-  }
+  await ensureNoteRowsExist(jobId, ids);
+  const notesById = await loadNotesById(jobId, ids);
 
   return rows.map((r) => {
     const note = notesById.get(r.credit_point_definition_id);
@@ -213,6 +203,7 @@ async function listPointsIpi(jobId, category) {
       total,
       breakdown: [],
       observations: note?.observations ?? null,
+      confirmed: !!note?.confirmed_in_result,
     };
   });
 }
@@ -232,9 +223,9 @@ async function getMonthlyIpi(jobId, creditPointDefinitionId) {
   }));
 }
 
-// ═════════════════════════════════════════════════════════════════════════
-// IRPJ/CSLL — pontos_ir_csll (anual, split IRPJ/CSLL)
-// ═════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// IRPJ/CSLL
+// ═══════════════════════════════════════════════════════════════════════
 
 async function listPointsIrCsll(jobId, category) {
   const [rows] = await pool.query(
@@ -253,24 +244,9 @@ async function listPointsIrCsll(jobId, category) {
     [jobId, category]
   );
 
-  if (rows.length > 0) {
-    const values = rows.map((r) => [jobId, r.credit_point_definition_id]);
-    await pool.query(
-      `INSERT IGNORE INTO job_point_notes (job_id, credit_point_definition_id) VALUES ?`,
-      [values]
-    );
-  }
-
   const ids = rows.map((r) => r.credit_point_definition_id);
-  let notesById = new Map();
-  if (ids.length > 0) {
-    const [notes] = await pool.query(
-      `SELECT credit_point_definition_id, observations FROM job_point_notes
-       WHERE job_id = ? AND credit_point_definition_id IN (?)`,
-      [jobId, ids]
-    );
-    notesById = new Map(notes.map((n) => [n.credit_point_definition_id, n]));
-  }
+  await ensureNoteRowsExist(jobId, ids);
+  const notesById = await loadNotesById(jobId, ids);
 
   return rows.map((r) => {
     const note = notesById.get(r.credit_point_definition_id);
@@ -289,6 +265,7 @@ async function listPointsIrCsll(jobId, category) {
         { label: 'CSLL', value: csll },
       ],
       observations: note?.observations ?? null,
+      confirmed: !!note?.confirmed_in_result,
     };
   });
 }
@@ -314,9 +291,9 @@ async function getMonthlyIrCsll(jobId, creditPointDefinitionId) {
   }));
 }
 
-// ═════════════════════════════════════════════════════════════════════════
-// INSS — pontos_inss (anual, valor único, sem split)
-// ═════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// INSS
+// ═══════════════════════════════════════════════════════════════════════
 
 async function listPointsInss(jobId, category) {
   const [rows] = await pool.query(
@@ -334,24 +311,9 @@ async function listPointsInss(jobId, category) {
     [jobId, category]
   );
 
-  if (rows.length > 0) {
-    const values = rows.map((r) => [jobId, r.credit_point_definition_id]);
-    await pool.query(
-      `INSERT IGNORE INTO job_point_notes (job_id, credit_point_definition_id) VALUES ?`,
-      [values]
-    );
-  }
-
   const ids = rows.map((r) => r.credit_point_definition_id);
-  let notesById = new Map();
-  if (ids.length > 0) {
-    const [notes] = await pool.query(
-      `SELECT credit_point_definition_id, observations FROM job_point_notes
-       WHERE job_id = ? AND credit_point_definition_id IN (?)`,
-      [jobId, ids]
-    );
-    notesById = new Map(notes.map((n) => [n.credit_point_definition_id, n]));
-  }
+  await ensureNoteRowsExist(jobId, ids);
+  const notesById = await loadNotesById(jobId, ids);
 
   return rows.map((r) => {
     const note = notesById.get(r.credit_point_definition_id);
@@ -364,6 +326,7 @@ async function listPointsInss(jobId, category) {
       total,
       breakdown: [],
       observations: note?.observations ?? null,
+      confirmed: !!note?.confirmed_in_result,
     };
   });
 }
@@ -383,11 +346,10 @@ async function getMonthlyInss(jobId, creditPointDefinitionId) {
   }));
 }
 
-// ═════════════════════════════════════════════════════════════════════════
-// Endpoints — despacham para a implementação certa conforme `tax`
-// ═════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// Endpoints de rota
+// ═══════════════════════════════════════════════════════════════════════
 
-// GET /jobs/:jobId/diagnostics/points?category=ADM|FTX&tax=PIS_COFINS|IPI|IRPJ_CSLL
 async function listPoints(req, res, next) {
   try {
     const { jobId } = req.params;
@@ -396,22 +358,15 @@ async function listPoints(req, res, next) {
     const tax = resolveTax(req.query.tax);
     await assertJobExists(jobId);
 
-    if (tax === 'IPI') {
-      return res.json({ data: await listPointsIpi(jobId, category) });
-    }
-    if (tax === 'IRPJ_CSLL') {
-      return res.json({ data: await listPointsIrCsll(jobId, category) });
-    }
-    if (tax === 'INSS') {
-      return res.json({ data: await listPointsInss(jobId, category) });
-    }
+    if (tax === 'IPI')       return res.json({ data: await listPointsIpi(jobId, category) });
+    if (tax === 'IRPJ_CSLL') return res.json({ data: await listPointsIrCsll(jobId, category) });
+    if (tax === 'INSS')      return res.json({ data: await listPointsInss(jobId, category) });
     res.json({ data: await listPointsPisCofins(jobId, category) });
   } catch (err) {
     next(err);
   }
 }
 
-// GET /jobs/:jobId/diagnostics/points/:creditPointDefinitionId/monthly?category=&tax=
 async function getMonthly(req, res, next) {
   try {
     const { jobId, creditPointDefinitionId } = req.params;
@@ -420,24 +375,15 @@ async function getMonthly(req, res, next) {
     const tax = resolveTax(req.query.tax);
     await assertJobExists(jobId);
 
-    if (tax === 'IPI') {
-      return res.json({ data: await getMonthlyIpi(jobId, creditPointDefinitionId) });
-    }
-    if (tax === 'IRPJ_CSLL') {
-      return res.json({ data: await getMonthlyIrCsll(jobId, creditPointDefinitionId) });
-    }
-    if (tax === 'INSS') {
-      return res.json({ data: await getMonthlyInss(jobId, creditPointDefinitionId) });
-    }
+    if (tax === 'IPI')       return res.json({ data: await getMonthlyIpi(jobId, creditPointDefinitionId) });
+    if (tax === 'IRPJ_CSLL') return res.json({ data: await getMonthlyIrCsll(jobId, creditPointDefinitionId) });
+    if (tax === 'INSS')      return res.json({ data: await getMonthlyInss(jobId, creditPointDefinitionId) });
     res.json({ data: await getMonthlyPisCofins(jobId, category, creditPointDefinitionId) });
   } catch (err) {
     next(err);
   }
 }
 
-// PUT /jobs/:jobId/diagnostics/points/:creditPointDefinitionId
-// Observação do analista — não depende de tax/category: é sempre a mesma
-// tabela job_point_notes, chaveada só por (job_id, credit_point_definition_id).
 async function updateNote(req, res, next) {
   try {
     const { jobId, creditPointDefinitionId } = req.params;
@@ -465,7 +411,7 @@ async function updateNote(req, res, next) {
     );
 
     const [rows] = await pool.query(
-      `SELECT job_id, credit_point_definition_id, observations, updated_at
+      `SELECT job_id, credit_point_definition_id, observations, confirmed_in_result, updated_at
        FROM job_point_notes WHERE job_id = ? AND credit_point_definition_id = ?`,
       [jobId, creditPointDefinitionId]
     );
@@ -484,4 +430,14 @@ async function updateNote(req, res, next) {
   }
 }
 
-module.exports = { listPoints, getMonthly, updateNote };
+module.exports = {
+  // handlers de rota
+  listPoints,
+  getMonthly,
+  updateNote,
+  // exportados para resultado.controller.js reutilizar
+  listPointsPisCofins,
+  listPointsIpi,
+  listPointsIrCsll,
+  listPointsInss,
+};

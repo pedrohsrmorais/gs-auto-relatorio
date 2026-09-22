@@ -12,12 +12,14 @@
     "test": "npm run test:controllers && npm run test:http"
   },
   "dependencies": {
+    "@xmldom/xmldom": "^0.9.12",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
+    "jszip": "^3.10.2",
     "morgan": "^1.12.0",
     "mysql2": "^3.24.4"
   },

@@ -14,7 +14,15 @@ import {
 import { ImportWizard, PontoImportWizard, PontoMultiImportWizard } from "@/components/data-import/ImportWizards";
 import { IpiPontoImportWizard, IpiMultiImportWizard, IrCsllImportWizard, InssImportWizard } from "@/components/data-import/IpiIrCsllWizards";
 import { DataViewerModal, GenericDataViewerModal } from "@/components/data-import/DataViewerModal";
-import { PERDCOMP_CONFIG, DARF_CONFIG, M400_CONFIG, M610_CONFIG } from "@/lib/import/importConfigs";
+import {
+  PERDCOMP_CONFIG,
+  DARF_CONFIG,
+  M400_CONFIG,
+  M610_CONFIG,
+  PERDCOMP_TAXLUMEN_CONFIG,
+  M400_TAXLUMEN_CONFIG,
+  M610_TAXLUMEN_CONFIG,
+} from "@/lib/import/importConfigs";
 import type { ImportTableConfig } from "@/lib/import/importConfigs";
 import type { ParsedPontoMonthlyRow } from "@/lib/import/customParsers";
 import type { IrCsllResolvedRow, InssResolvedRow } from "@/components/data-import/IpiIrCsllWizards";
@@ -48,7 +56,8 @@ const INSS_VIEW_COLUMNS = [
 // ─── Fontes genéricas (PERDCOMP / DARF / M400 / M610) ──────────────────────
 
 interface SourceDef {
-  config: ImportTableConfig;
+  configs: ImportTableConfig[];
+  defaultConfigId: string;
   queryKey: (jobId: number) => unknown[];
   list: (jobId: number) => Promise<Record<string, unknown>[]>;
   bulkImport: (jobId: number, rows: Record<string, unknown>[]) => Promise<{ inserted: number }>;
@@ -57,28 +66,32 @@ interface SourceDef {
 
 const SOURCES: SourceDef[] = [
   {
-    config: PERDCOMP_CONFIG,
+    configs: [PERDCOMP_CONFIG, PERDCOMP_TAXLUMEN_CONFIG],
+    defaultConfigId: "perdcomp",
     queryKey: (id) => ["perdcomps", id],
     list: (id) => perdcompApi.list(id).then((rows) => rows as unknown as Record<string, unknown>[]),
     bulkImport: (id, rows) => perdcompApi.bulkImport(id, rows),
     clearAll: (id) => perdcompApi.clearAll(id),
   },
   {
-    config: DARF_CONFIG,
+    configs: [DARF_CONFIG],
+    defaultConfigId: "darf",
     queryKey: (id) => ["darf-entries", id],
     list: (id) => darfApi.list(id).then((rows) => rows as unknown as Record<string, unknown>[]),
     bulkImport: (id, rows) => darfApi.bulkImport(id, rows),
     clearAll: (id) => darfApi.clearAll(id),
   },
   {
-    config: M400_CONFIG,
+    configs: [M400_CONFIG, M400_TAXLUMEN_CONFIG],
+    defaultConfigId: "sped-m400",
     queryKey: (id) => ["sped-m400", id],
     list: (id) => spedM400Api.list(id).then((rows) => rows as unknown as Record<string, unknown>[]),
     bulkImport: (id, rows) => spedM400Api.bulkImport(id, rows),
     clearAll: (id) => spedM400Api.clearAll(id),
   },
   {
-    config: M610_CONFIG,
+    configs: [M610_CONFIG, M610_TAXLUMEN_CONFIG],
+    defaultConfigId: "sped-m610",
     queryKey: (id) => ["sped-m610", id],
     list: (id) => spedM610Api.list(id).then((rows) => rows as unknown as Record<string, unknown>[]),
     bulkImport: (id, rows) => spedM610Api.bulkImport(id, rows),
@@ -88,10 +101,13 @@ const SOURCES: SourceDef[] = [
 
 function SourceCard({ jobId, source }: { jobId: number; source: SourceDef }) {
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [selectedConfigId, setSelectedConfigId] = useState(source.defaultConfigId);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const queryClient = useQueryClient();
   const queryKey = source.queryKey(jobId);
   const { data = [] } = useQuery({ queryKey, queryFn: () => source.list(jobId) });
+
+  const activeConfig = source.configs.find((c) => c.id === selectedConfigId) ?? source.configs[0];
 
   const clearMutation = useMutation({
     mutationFn: () => source.clearAll(jobId),
@@ -108,19 +124,47 @@ function SourceCard({ jobId, source }: { jobId: number; source: SourceDef }) {
       <CardContent className="p-5 space-y-3">
         <div className="flex items-start justify-between">
           <div>
-            <p className="font-medium">{source.config.title}</p>
-            <p className="text-sm text-muted-foreground">{source.config.description}</p>
+            <p className="font-medium">{activeConfig.title}</p>
+            <p className="text-sm text-muted-foreground">{activeConfig.description}</p>
           </div>
           <Badge variant={data.length > 0 ? "success" : "muted"}>
             {data.length} registro{data.length === 1 ? "" : "s"}
           </Badge>
         </div>
+
+        {source.configs.length > 1 && (
+          <div className="flex items-center gap-2">
+            <p className="text-xs text-muted-foreground shrink-0">Formato:</p>
+            <div className="flex gap-1">
+              {source.configs.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => setSelectedConfigId(c.id)}
+                  className={`text-xs px-2 py-0.5 rounded-md border transition-colors ${
+                    selectedConfigId === c.id
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "border-border text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  {c.id.includes("taxlumen") ? "Taxlumen" : "Padrão"}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="flex items-center gap-2 pt-1 flex-wrap">
-          <Button size="sm" onClick={() => setWizardOpen(true)}><FileUp className="h-4 w-4" /> Importar dados</Button>
-          <DataViewerModal config={source.config} queryKey={queryKey} fetcher={() => source.list(jobId)} />
+          <Button size="sm" onClick={() => setWizardOpen(true)}>
+            <FileUp className="h-4 w-4" /> Importar dados
+          </Button>
+          <DataViewerModal config={activeConfig} queryKey={queryKey} fetcher={() => source.list(jobId)} />
           {data.length > 0 && (
-            <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive hover:bg-destructive/10"
-              onClick={() => setConfirmOpen(true)}>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+              onClick={() => setConfirmOpen(true)}
+            >
               <Trash2 className="h-4 w-4" /> Desimportar
             </Button>
           )}
@@ -130,7 +174,7 @@ function SourceCard({ jobId, source }: { jobId: number; source: SourceDef }) {
       <ImportWizard
         open={wizardOpen}
         onOpenChange={setWizardOpen}
-        config={source.config}
+        config={activeConfig}
         onCommit={async (rows) => {
           const res = await source.bulkImport(jobId, rows);
           queryClient.invalidateQueries({ queryKey });
@@ -140,14 +184,20 @@ function SourceCard({ jobId, source }: { jobId: number; source: SourceDef }) {
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent>
-          <DialogHeader><DialogTitle>Desimportar {source.config.title}?</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle>Desimportar {activeConfig.title}?</DialogTitle>
+          </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Remove permanentemente os <strong>{data.length}</strong> registro(s) já importados desta tabela
-            para este job. Ação registrada no histórico de auditoria.
+            Remove permanentemente os <strong>{data.length}</strong> registro(s) já importados desta
+            tabela para este job. Ação registrada no histórico de auditoria.
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancelar</Button>
-            <Button variant="destructive" onClick={() => clearMutation.mutate()} disabled={clearMutation.isPending}>
+            <Button
+              variant="destructive"
+              onClick={() => clearMutation.mutate()}
+              disabled={clearMutation.isPending}
+            >
               {clearMutation.isPending ? "Removendo…" : "Sim, desimportar"}
             </Button>
           </DialogFooter>
@@ -528,7 +578,7 @@ export function ColetaPanel({ jobId }: { jobId: number }) {
         </p>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
-        {SOURCES.map((s) => <SourceCard key={s.config.id} jobId={jobId} source={s} />)}
+        {SOURCES.map((s) => <SourceCard key={s.defaultConfigId} jobId={jobId} source={s} />)}
       </div>
 
       <div>
