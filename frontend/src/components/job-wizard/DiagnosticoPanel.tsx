@@ -1,25 +1,29 @@
-//components/job-wizard/DiagnosticoPanel.tsx
+// components/job-wizard/DiagnosticoPanel.tsx
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ChevronRight, Loader2 } from "lucide-react";
+import { ChevronRight, Loader2, CheckCircle2, AlertCircle, Clock, MessageSquare, Star } from "lucide-react";
 import { diagnosticsApi } from "@/lib/api";
-import type { DiagnosticCategory, DiagnosticTax, DiagnosticPointSummary, DiagnosticMonthlyRow } from "@/lib/api";
+import type {
+  DiagnosticCategory, DiagnosticTax, DiagnosticPointSummary,
+  DiagnosticMonthlyRow, ReviewStatus,
+} from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 type Category = "ADM" | "FTX";
 
 const CATEGORY_ORDER: Category[] = ["ADM", "FTX"];
 const CATEGORY_LABEL: Record<Category, string> = { ADM: "ADM", FTX: "FTX" };
 
-// Tributos disponíveis por categoria. IPI e IRPJ/CSLL existem tanto em ADM
-// quanto em FTX no catálogo (a planilha mestre Fintax já traz pontos
-// IRPJ/CSLL com cor de risco) — por isso aparecem nas duas.
 const TAXES_BY_CATEGORY: Record<Category, DiagnosticTax[]> = {
   ADM: ["PIS_COFINS", "IPI", "IRPJ_CSLL", "INSS"],
   FTX: ["PIS_COFINS", "IPI", "IRPJ_CSLL", "INSS"],
@@ -58,9 +62,115 @@ function riskBadgeVariant(color: string | null) {
   return "muted" as const;
 }
 
+// ─── Indicador de review_status ───────────────────────────────────────────────
+
+function ReviewStatusBadge({ status, reviewNote }: { status: ReviewStatus; reviewNote: string | null }) {
+  if (status === "APPROVED") {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            Aprovado
+          </span>
+        </TooltipTrigger>
+        <TooltipContent>Análise validada pelo administrador.</TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  if (status === "NEEDS_REVIEW") {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-destructive cursor-help">
+            <AlertCircle className="h-3.5 w-3.5" />
+            Revisar
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs text-xs">
+          <p className="font-medium mb-1">Nota do administrador:</p>
+          <p>{reviewNote ?? "—"}</p>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  // PENDING — só mostra ícone se tiver observations (análise escrita aguardando validação)
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
+          <Clock className="h-3.5 w-3.5" />
+          Pendente
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>Aguardando validação do administrador.</TooltipContent>
+    </Tooltip>
+  );
+}
+
+// ─── Modal de devolução (admin) ───────────────────────────────────────────────
+
+function NeedsReviewDialog({
+  open,
+  onOpenChange,
+  onConfirm,
+  isPending,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: (note: string) => void;
+  isPending: boolean;
+}) {
+  const [note, setNote] = useState("");
+
+  function handleConfirm() {
+    if (!note.trim()) {
+      toast.error("Escreva uma nota antes de devolver.");
+      return;
+    }
+    onConfirm(note.trim());
+    setNote("");
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) setNote(""); onOpenChange(o); }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <MessageSquare className="h-4 w-4" />
+            Devolver para revisão
+          </DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          Descreva o que o analista deve corrigir ou complementar nesta análise.
+        </p>
+        <Textarea
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Ex: O valor informado não bate com o SPED M610. Por favor revise o cálculo do crédito de março/2024."
+          className="min-h-[100px] text-sm"
+          autoFocus
+        />
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancelar</Button>
+          <Button
+            variant="destructive"
+            onClick={handleConfirm}
+            disabled={isPending || !note.trim()}
+          >
+            {isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+            Devolver
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ═════════════════════════════════════════════════════════════════════════
-// Linha de um ponto — genérica: mostra `total` e, se houver, as colunas de
-// `breakdown` (PIS/COFINS, IRPJ/CSLL, ou nenhuma para IPI que não tem split).
+// PointRow
 // ═════════════════════════════════════════════════════════════════════════
 
 function PointRow({
@@ -73,19 +183,27 @@ function PointRow({
   showColor: boolean;
   onOpenDetail: (point: DiagnosticPointSummary) => void;
 }) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const queryClient = useQueryClient();
   const queryKey = ["diagnostic-points", jobId, category, tax];
+  const progressKey = ["diagnostic-progress", jobId];
 
   const [observations, setObservations] = useState(point.observations ?? "");
+  const [needsReviewOpen, setNeedsReviewOpen] = useState(false);
 
   useEffect(() => {
     setObservations(point.observations ?? "");
   }, [point.observations]);
 
+  // ── Salvar observações (analista ou admin) ─────────────────────────────────
   const noteMutation = useMutation({
     mutationFn: (data: { observations?: string }) =>
       diagnosticsApi.updateNote(jobId, point.credit_point_definition_id, data),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey });
+      queryClient.invalidateQueries({ queryKey: progressKey });
+    },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Erro ao salvar."),
   });
 
@@ -94,45 +212,163 @@ function PointRow({
     noteMutation.mutate({ observations });
   }
 
+  // ── Aprovar / Devolver (admin) ─────────────────────────────────────────────
+  const reviewMutation = useMutation({
+    mutationFn: ({ status, note }: { status: "APPROVED" | "NEEDS_REVIEW"; note?: string }) =>
+      diagnosticsApi.reviewPoint(jobId, point.credit_point_definition_id, status, note),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey });
+      queryClient.invalidateQueries({ queryKey: progressKey });
+      if (result.meta.all_points_approved) {
+        toast.success("Todos os pontos estão aprovados! O job pode avançar para o Resultado.");
+      } else {
+        toast.success(
+          result.data.review_status === "APPROVED"
+            ? "Ponto aprovado."
+            : "Ponto devolvido para revisão."
+        );
+      }
+      setNeedsReviewOpen(false);
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Erro ao revisar ponto."),
+  });
+
   const displayName = point.name?.trim() || `Ponto ${point.external_id}`;
+  const hasObservations = (point.observations ?? "").trim().length > 0;
 
   return (
-    <TableRow>
-      <TableCell>
-        <button
-          type="button"
-          onClick={() => onOpenDetail(point)}
-          className="flex items-center gap-1.5 text-sm font-medium hover:text-primary transition-colors text-left"
-        >
-          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          {displayName}
-        </button>
-      </TableCell>
-
-      {showColor && (
+    <>
+      <TableRow className={point.review_status === "NEEDS_REVIEW" ? "bg-destructive/5" : undefined}>
+        {/* Nome do ponto */}
         <TableCell>
-          <Badge variant={riskBadgeVariant(point.risk_color)}>{point.risk_color ?? "—"}</Badge>
+          <button
+            type="button"
+            onClick={() => onOpenDetail(point)}
+            className="flex items-center gap-1.5 text-sm font-medium hover:text-primary transition-colors text-left"
+          >
+            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            {/* Ícone de ponto prioritário/fixo */}
+            {point.is_fixed_point && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Star className="h-3 w-3 text-amber-500 fill-current shrink-0" />
+                </TooltipTrigger>
+                <TooltipContent className="text-xs">Ponto prioritário — sempre exibido</TooltipContent>
+              </Tooltip>
+            )}
+            {displayName}
+          </button>
         </TableCell>
-      )}
 
-      <TableCell className="min-w-[260px]">
-        <Input
-          value={observations}
-          onChange={(e) => setObservations(e.target.value)}
-          onBlur={saveObservationsIfChanged}
-          placeholder="Observações do analista…"
-          className="h-8 text-sm"
-        />
-      </TableCell>
+        {/* Cor de risco (FTX) */}
+        {showColor && (
+          <TableCell>
+            <Badge variant={riskBadgeVariant(point.risk_color)}>{point.risk_color ?? "—"}</Badge>
+          </TableCell>
+        )}
 
-      {point.breakdown.map((b) => (
-        <TableCell key={b.label} className="text-right text-sm whitespace-nowrap">{currency(b.value)}</TableCell>
-      ))}
+        {/* Observações — editável por qualquer um */}
+        <TableCell className="min-w-[260px]">
+          <div className="space-y-1">
+            <Input
+              value={observations}
+              onChange={(e) => setObservations(e.target.value)}
+              onBlur={saveObservationsIfChanged}
+              placeholder="Observações do analista…"
+              className={`h-8 text-sm ${
+                point.review_status === "NEEDS_REVIEW"
+                  ? "border-destructive focus-visible:ring-destructive/30"
+                  : ""
+              }`}
+            />
+            {/* Nota do admin visível abaixo do input quando NEEDS_REVIEW */}
+            {point.review_status === "NEEDS_REVIEW" && point.review_note && (
+              <p className="text-xs text-destructive flex items-start gap-1">
+                <MessageSquare className="h-3 w-3 mt-0.5 shrink-0" />
+                {point.review_note}
+              </p>
+            )}
+          </div>
+        </TableCell>
 
-      <TableCell className="text-right text-sm font-medium whitespace-nowrap">{currency(point.total)}</TableCell>
-    </TableRow>
+        {/* Status de revisão — só aparece se há observações */}
+        <TableCell className="whitespace-nowrap">
+          {hasObservations ? (
+            <ReviewStatusBadge status={point.review_status} reviewNote={point.review_note} />
+          ) : (
+            <span className="text-xs text-muted-foreground/50">—</span>
+          )}
+        </TableCell>
+
+        {/* Ações de revisão — admin only, só quando há observações */}
+        {isAdmin && (
+          <TableCell className="whitespace-nowrap">
+            {hasObservations && point.review_status !== "APPROVED" && (
+              <div className="flex items-center gap-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs text-success border-success/40 hover:bg-success/10"
+                  onClick={() => reviewMutation.mutate({ status: "APPROVED" })}
+                  disabled={reviewMutation.isPending}
+                >
+                  {reviewMutation.isPending ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="h-3 w-3 mr-1" />
+                  )}
+                  Aprovar
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs text-destructive border-destructive/40 hover:bg-destructive/10"
+                  onClick={() => setNeedsReviewOpen(true)}
+                  disabled={reviewMutation.isPending}
+                >
+                  <AlertCircle className="h-3 w-3 mr-1" />
+                  Devolver
+                </Button>
+              </div>
+            )}
+            {hasObservations && point.review_status === "APPROVED" && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs text-muted-foreground"
+                onClick={() => reviewMutation.mutate({ status: "NEEDS_REVIEW", note: "Revisão solicitada pelo administrador." })}
+                disabled={reviewMutation.isPending}
+              >
+                Reabrir
+              </Button>
+            )}
+          </TableCell>
+        )}
+
+        {/* Valores de breakdown (PIS, COFINS, IRPJ, CSLL...) */}
+        {point.breakdown.map((b) => (
+          <TableCell key={b.label} className="text-right text-sm whitespace-nowrap">
+            {currency(b.value)}
+          </TableCell>
+        ))}
+
+        {/* Total */}
+        <TableCell className="text-right text-sm font-medium whitespace-nowrap">
+          {currency(point.total)}
+        </TableCell>
+      </TableRow>
+
+      <NeedsReviewDialog
+        open={needsReviewOpen}
+        onOpenChange={setNeedsReviewOpen}
+        onConfirm={(note) => reviewMutation.mutate({ status: "NEEDS_REVIEW", note })}
+        isPending={reviewMutation.isPending}
+      />
+    </>
   );
 }
+
+// ─── DetailModal ──────────────────────────────────────────────────────────────
 
 function DetailModal({
   jobId, category, tax, point, onOpenChange,
@@ -166,7 +402,14 @@ function DetailModal({
     <Dialog open={!!point} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{displayName} — valores por {periodLabel.toLowerCase()}</DialogTitle>
+          <DialogTitle>
+            <span className="flex items-center gap-2">
+              {point?.is_fixed_point && (
+                <Star className="h-3.5 w-3.5 text-amber-500 fill-current shrink-0" />
+              )}
+              {displayName} — valores por {periodLabel.toLowerCase()}
+            </span>
+          </DialogTitle>
         </DialogHeader>
 
         {isLoading ? (
@@ -174,7 +417,11 @@ function DetailModal({
             <Loader2 className="h-5 w-5 animate-spin mr-2" /> Carregando…
           </div>
         ) : data.length === 0 ? (
-          <p className="text-sm text-muted-foreground py-6 text-center">Nenhum valor encontrado para este ponto.</p>
+          <p className="text-sm text-muted-foreground py-6 text-center">
+            {point?.is_fixed_point
+              ? "Este ponto prioritário ainda não tem dados importados para este job."
+              : "Nenhum valor encontrado para este ponto."}
+          </p>
         ) : (
           <div className="border border-border rounded-lg overflow-auto max-h-[50vh]">
             <Table>
@@ -191,7 +438,11 @@ function DetailModal({
                     <TableCell className="text-sm">{row.period_label}</TableCell>
                     {breakdownLabels.map((label) => {
                       const key = `${label.toLowerCase()}_value` as keyof DiagnosticMonthlyRow;
-                      return <TableCell key={label} className="text-right text-sm">{currency(Number(row[key]) || 0)}</TableCell>;
+                      return (
+                        <TableCell key={label} className="text-right text-sm">
+                          {currency(Number(row[key]) || 0)}
+                        </TableCell>
+                      );
                     })}
                     <TableCell className="text-right text-sm font-medium">{currency(row.total)}</TableCell>
                   </TableRow>
@@ -200,7 +451,9 @@ function DetailModal({
               <tfoot>
                 <TableRow className="bg-muted/40 font-medium">
                   <TableCell className="text-sm">Total</TableCell>
-                  {totals.map((t) => <TableCell key={t.label} className="text-right text-sm">{currency(t.total)}</TableCell>)}
+                  {totals.map((t) => (
+                    <TableCell key={t.label} className="text-right text-sm">{currency(t.total)}</TableCell>
+                  ))}
                   <TableCell className="text-right text-sm">{currency(grandTotal)}</TableCell>
                 </TableRow>
               </tfoot>
@@ -212,7 +465,11 @@ function DetailModal({
   );
 }
 
+// ─── PointsTable ──────────────────────────────────────────────────────────────
+
 function PointsTable({ jobId, category, tax }: { jobId: number; category: Category; tax: DiagnosticTax }) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [detailPoint, setDetailPoint] = useState<DiagnosticPointSummary | null>(null);
 
   const { data: points = [], isLoading } = useQuery({
@@ -227,10 +484,47 @@ function PointsTable({ jobId, category, tax }: { jobId: number; category: Catego
     sum: points.reduce((s, p) => s + (p.breakdown.find((b) => b.label === label)?.value ?? 0), 0),
   }));
   const grandTotal = points.reduce((s, p) => s + p.total, 0);
-  const colSpanBeforeTotals = 1 + (showColor ? 1 : 0) + 1; // ponto [+ cor] + observações
+
+  // Ponto + [Cor] + Observações + Status + [Ações admin] = colunas antes dos valores
+  const colSpanBeforeTotals = 1 + (showColor ? 1 : 0) + 1 + 1 + (isAdmin ? 1 : 0);
+
+  // Resumo de validação no topo da tabela
+  const approvedCount = points.filter((p) => p.review_status === "APPROVED").length;
+  const withObsCount = points.filter((p) => (p.observations ?? "").trim().length > 0).length;
+  const needsReviewCount = points.filter((p) => p.review_status === "NEEDS_REVIEW").length;
+  const fixedCount = points.filter((p) => p.is_fixed_point).length;
 
   return (
     <>
+      {/* Resumo de progresso da tabela atual */}
+      {(withObsCount > 0 || fixedCount > 0) && (
+        <div className="flex items-center gap-4 text-xs text-muted-foreground pb-1">
+          {withObsCount > 0 && (
+            <span className="flex items-center gap-1 text-success">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              {approvedCount} aprovado(s)
+            </span>
+          )}
+          {needsReviewCount > 0 && (
+            <span className="flex items-center gap-1 text-destructive">
+              <AlertCircle className="h-3.5 w-3.5" />
+              {needsReviewCount} para revisar
+            </span>
+          )}
+          {withObsCount > 0 && (
+            <span className="text-muted-foreground/60">
+              {withObsCount} de {points.length} com análise
+            </span>
+          )}
+          {fixedCount > 0 && (
+            <span className="flex items-center gap-1 text-amber-600">
+              <Star className="h-3.5 w-3.5 fill-current" />
+              {fixedCount} prioritário{fixedCount !== 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
+      )}
+
       <Card>
         <CardContent className="p-0">
           {isLoading ? (
@@ -239,7 +533,7 @@ function PointsTable({ jobId, category, tax }: { jobId: number; category: Catego
             </div>
           ) : points.length === 0 ? (
             <p className="text-sm text-muted-foreground py-10 text-center">
-              Nenhum ponto {TAX_LABEL[tax]} importado ainda para este job. Importe os dados na aba "Coleta de Dados".
+              Nenhum ponto {TAX_LABEL[tax]} encontrado para este job. Importe os dados na aba "Coleta de Dados" ou cadastre pontos prioritários em Administração → Pontos.
             </p>
           ) : (
             <div className="overflow-auto">
@@ -249,7 +543,11 @@ function PointsTable({ jobId, category, tax }: { jobId: number; category: Catego
                     <TableHead>Ponto</TableHead>
                     {showColor && <TableHead>Cor</TableHead>}
                     <TableHead>Observações</TableHead>
-                    {breakdownLabels.map((label) => <TableHead key={label} className="text-right">{label} Total</TableHead>)}
+                    <TableHead>Status</TableHead>
+                    {isAdmin && <TableHead>Ações</TableHead>}
+                    {breakdownLabels.map((label) => (
+                      <TableHead key={label} className="text-right">{label} Total</TableHead>
+                    ))}
                     <TableHead className="text-right">Crédito Total</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -269,7 +567,9 @@ function PointsTable({ jobId, category, tax }: { jobId: number; category: Catego
                 <tfoot>
                   <TableRow className="bg-muted/40 font-medium">
                     <TableCell colSpan={colSpanBeforeTotals}>Total {TAX_LABEL[tax]}</TableCell>
-                    {totals.map((t) => <TableCell key={t.label} className="text-right">{currency(t.sum)}</TableCell>)}
+                    {totals.map((t) => (
+                      <TableCell key={t.label} className="text-right">{currency(t.sum)}</TableCell>
+                    ))}
                     <TableCell className="text-right">{currency(grandTotal)}</TableCell>
                   </TableRow>
                 </tfoot>
@@ -290,9 +590,7 @@ function PointsTable({ jobId, category, tax }: { jobId: number; category: Catego
   );
 }
 
-// ═════════════════════════════════════════════════════════════════════════
-// Painel principal — abas ADM/FTX, com sub-abas de tributo dentro de cada uma.
-// ═════════════════════════════════════════════════════════════════════════
+// ─── DiagnosticoPanel ─────────────────────────────────────────────────────────
 
 export function DiagnosticoPanel({ jobId }: { jobId: number }) {
   const [category, setCategory] = useState<Category>("ADM");

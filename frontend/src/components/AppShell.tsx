@@ -80,7 +80,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
               <span className="text-primary-foreground font-bold text-sm">S</span>
             </div>
-            <span className="font-display font-semibold text-lg tracking-tight">Studio Fiscal</span>
+            <span className="font-display font-semibold text-lg tracking-tight">Grupo Studio</span>
           </Link>
           <button
             onClick={() => setSidebarOpen(false)}

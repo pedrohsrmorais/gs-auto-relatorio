@@ -8,9 +8,17 @@ const { pool } = require('../config/database');
  *   2. Valores mensais por ponto FTX  (tabela pontos_ftx)      — PIS/COFINS
  *   3. Valores mensais por ponto IPI  (tabela pontos_ipi)      — sem split
  *   4. Valores anuais por ponto IR/CSLL (tabela pontos_ir_csll) — split IRPJ/CSLL
- *   5. Gerenciamento de credit_point_definitions (listagem, renomeação,
- *      cor de risco, tributo/natureza, importação em massa, criação manual
- *      e reset total).
+ *   5. Valores anuais por ponto INSS  (tabela pontos_inss)     — sem split
+ *   6. Gerenciamento de credit_point_definitions (listagem, renomeação,
+ *      cor de risco, tributo/natureza, importação em massa, criação manual,
+ *      toggle always_show e reset total).
+ *
+ * Pontos fixos (always_show):
+ *   Admin pode marcar qualquer ponto do catálogo como "ponto principal"
+ *   via PATCH /credit-point-definitions/:id/always-show.
+ *   Esses pontos sempre aparecem no diagnóstico, mesmo sem dados importados.
+ *   A migration inicial (migration_always_show.sql) já pré-marca os pontos
+ *   do Plano de Trabalho. A partir daí, o admin gerencia direto pela UI.
  *
  * IMPORTANTE — IPI e IR/CSLL NÃO fazem mais "match por nome automático com
  * criação silenciosa" no backend. Esses formatos de planilha não trazem
@@ -30,7 +38,7 @@ class ApiError extends Error {
   }
 }
 
-const VALID_COLORS = ['VERDE', 'AMARELO', 'VERMELHO'];
+const VALID_COLORS  = ['VERDE', 'AMARELO', 'VERMELHO'];
 const VALID_NATURES = ['CREDITO', 'PASSIVO'];
 
 // ─── Auditoria ───────────────────────────────────────────────────────────────
@@ -81,15 +89,15 @@ async function resolvePointDefinition(conn, category, externalId, name, riskColo
       );
     }
     return {
-      id: existing[0].id,
-      name: updates.name ?? existing[0].name,
+      id:         existing[0].id,
+      name:       updates.name      ?? existing[0].name,
       risk_color: updates.risk_color ?? existing[0].risk_color,
     };
   }
 
-  const finalName = (name && name.trim()) || '';
+  const finalName  = (name && name.trim()) || '';
   const finalColor = VALID_COLORS.includes(riskColor) ? riskColor : null;
-  const [result] = await conn.query(
+  const [result]   = await conn.query(
     `INSERT INTO credit_point_definitions (category, external_id, name, risk_color) VALUES (?, ?, ?, ?)`,
     [category, externalId, finalName, finalColor]
   );
@@ -103,7 +111,8 @@ function listPontos(tableName) {
     try {
       const { jobId } = req.params;
       const [rows] = await pool.query(
-        `SELECT p.*, d.external_id, d.name AS point_name, d.risk_color, d.tax_id, t.code AS tax_code, t.name AS tax_name
+        `SELECT p.*, d.external_id, d.name AS point_name, d.risk_color, d.always_show,
+                d.tax_id, t.code AS tax_code, t.name AS tax_name
          FROM ${tableName} p
          JOIN credit_point_definitions d ON d.id = p.credit_point_definition_id
          LEFT JOIN taxes t ON t.id = d.tax_id
@@ -183,18 +192,18 @@ function bulkImportPontos(category, tableName) {
       }
 
       await logAction(req, {
-        action: `${category}_PONTO_IMPORTED`,
+        action:     `${category}_PONTO_IMPORTED`,
         entityType: tableName,
-        jobId: Number(jobId),
-        details: { points: pointsSummary, total_inserted: totalInserted },
+        jobId:      Number(jobId),
+        details:    { points: pointsSummary, total_inserted: totalInserted },
       });
 
       const firstPoint = pointsSummary[0];
       res.json({
         data: {
-          inserted: totalInserted,
+          inserted:  totalInserted,
           pointName: firstPoint?.point_name ?? '',
-          points: pointsSummary,
+          points:    pointsSummary,
         },
       });
     } catch (err) {
@@ -216,10 +225,10 @@ function clearPontos(tableName, logPrefix) {
       await pool.query(`DELETE FROM ${tableName} WHERE job_id = ?`, [jobId]);
 
       await logAction(req, {
-        action: `${logPrefix}_CLEARED`,
+        action:     `${logPrefix}_CLEARED`,
         entityType: tableName,
-        jobId: Number(jobId),
-        details: { deleted: count },
+        jobId:      Number(jobId),
+        details:    { deleted: count },
       });
 
       res.json({ data: { deleted: count } });
@@ -251,7 +260,8 @@ async function listIpi(req, res, next) {
   try {
     const { jobId } = req.params;
     const [rows] = await pool.query(
-      `SELECT p.*, d.external_id, d.name AS point_name, d.tax_id, t.code AS tax_code, t.name AS tax_name
+      `SELECT p.*, d.external_id, d.name AS point_name, d.always_show,
+              d.tax_id, t.code AS tax_code, t.name AS tax_name
        FROM pontos_ipi p
        JOIN credit_point_definitions d ON d.id = p.credit_point_definition_id
        LEFT JOIN taxes t ON t.id = d.tax_id
@@ -303,10 +313,10 @@ async function bulkImportIpi(req, res, next) {
     }
 
     await logAction(req, {
-      action: 'IPI_PONTO_IMPORTED',
+      action:     'IPI_PONTO_IMPORTED',
       entityType: 'pontos_ipi',
-      jobId: Number(jobId),
-      details: { credit_point_definition_id: point.id, point_name: point.name, inserted },
+      jobId:      Number(jobId),
+      details:    { credit_point_definition_id: point.id, point_name: point.name, inserted },
     });
 
     res.json({ data: { inserted, pointName: point.name } });
@@ -321,16 +331,15 @@ const clearIpi = clearPontos('pontos_ipi', 'PONTOS_IPI');
 // Pontos IR/CSLL — anual, split IRPJ/CSLL
 //
 // Body: { rows: [{ credit_point_definition_id, reference_year, tax_sub_type, value }] }
-// Cada linha já vem com o ponto RESOLVIDO pelo frontend (o mesmo
-// credit_point_definition_id se repete para todos os anos/tipo de um
-// mesmo ponto da planilha).
+// Cada linha já vem com o ponto RESOLVIDO pelo frontend.
 // ═════════════════════════════════════════════════════════════════════════
 
 async function listIrCsll(req, res, next) {
   try {
     const { jobId } = req.params;
     const [rows] = await pool.query(
-      `SELECT p.*, d.external_id, d.name AS point_name, d.tax_id, t.code AS tax_code, t.name AS tax_name
+      `SELECT p.*, d.external_id, d.name AS point_name, d.always_show,
+              d.tax_id, t.code AS tax_code, t.name AS tax_name
        FROM pontos_ir_csll p
        JOIN credit_point_definitions d ON d.id = p.credit_point_definition_id
        LEFT JOIN taxes t ON t.id = d.tax_id
@@ -347,7 +356,7 @@ async function listIrCsll(req, res, next) {
 async function bulkImportIrCsll(req, res, next) {
   try {
     const { jobId } = req.params;
-    const { rows } = req.body;
+    const { rows }  = req.body;
     if (!Array.isArray(rows) || rows.length === 0) throw new ApiError(400, 'Nenhum valor para importar.');
 
     await assertJobExists(jobId);
@@ -392,10 +401,10 @@ async function bulkImportIrCsll(req, res, next) {
     }
 
     await logAction(req, {
-      action: 'IR_CSLL_PONTO_IMPORTED',
+      action:     'IR_CSLL_PONTO_IMPORTED',
       entityType: 'pontos_ir_csll',
-      jobId: Number(jobId),
-      details: { total_inserted: totalInserted, points: Array.from(pointById.values()) },
+      jobId:      Number(jobId),
+      details:    { total_inserted: totalInserted, points: Array.from(pointById.values()) },
     });
 
     res.json({ data: { inserted: totalInserted } });
@@ -411,15 +420,15 @@ const clearIrCsll = clearPontos('pontos_ir_csll', 'PONTOS_IR_CSLL');
 //
 // Body: { rows: [{ credit_point_definition_id, reference_year, value }] }
 // Mesmo padrão de bulkImportIrCsll: 1 arquivo cobre N pontos de uma vez,
-// cada linha já vem com o ponto RESOLVIDO pelo frontend (usuário confirmou
-// o match, usou o respaldo por ordem, ou criou um ponto novo).
+// cada linha já vem com o ponto RESOLVIDO pelo frontend.
 // ═════════════════════════════════════════════════════════════════════════
 
 async function listInss(req, res, next) {
   try {
     const { jobId } = req.params;
     const [rows] = await pool.query(
-      `SELECT p.*, d.external_id, d.name AS point_name, d.risk_color, d.tax_id, t.code AS tax_code, t.name AS tax_name
+      `SELECT p.*, d.external_id, d.name AS point_name, d.risk_color, d.always_show,
+              d.tax_id, t.code AS tax_code, t.name AS tax_name
        FROM pontos_inss p
        JOIN credit_point_definitions d ON d.id = p.credit_point_definition_id
        LEFT JOIN taxes t ON t.id = d.tax_id
@@ -436,7 +445,7 @@ async function listInss(req, res, next) {
 async function bulkImportInss(req, res, next) {
   try {
     const { jobId } = req.params;
-    const { rows } = req.body;
+    const { rows }  = req.body;
     if (!Array.isArray(rows) || rows.length === 0) throw new ApiError(400, 'Nenhum valor para importar.');
 
     await assertJobExists(jobId);
@@ -481,10 +490,10 @@ async function bulkImportInss(req, res, next) {
     }
 
     await logAction(req, {
-      action: 'INSS_PONTO_IMPORTED',
+      action:     'INSS_PONTO_IMPORTED',
       entityType: 'pontos_inss',
-      jobId: Number(jobId),
-      details: { total_inserted: totalInserted, points: Array.from(pointById.values()) },
+      jobId:      Number(jobId),
+      details:    { total_inserted: totalInserted, points: Array.from(pointById.values()) },
     });
 
     res.json({ data: { inserted: totalInserted } });
@@ -498,24 +507,30 @@ const clearInss = clearPontos('pontos_inss', 'PONTOS_INSS');
 // ─── Credit point definitions (catálogo global de pontos) ────────────────────
 
 /**
- * GET /credit-point-definitions?category=ADM&tax=IPI&nature=CREDITO&search=...
+ * GET /credit-point-definitions?category=ADM&tax=IPI&nature=CREDITO&search=...&always_show=1
  * `nature` é usado principalmente pelos wizards de IPI/IR-CSLL para listar
  * só candidatos de crédito (nunca casar com um ponto Passivo por engano).
+ * `always_show=1` filtra apenas os pontos marcados como principais.
  */
 async function listDefinitions(req, res, next) {
   try {
-    const { category, tax, nature, search } = req.query;
+    const { category, tax, nature, search, always_show } = req.query;
 
     let sql = `SELECT d.id, d.category, d.tax_id, t.code AS tax_code, t.name AS tax_name,
-                      d.nature, d.external_id, d.name, d.risk_color, d.created_at, d.updated_at
+                      d.nature, d.external_id, d.name, d.risk_color, d.always_show,
+                      d.created_at, d.updated_at
                FROM credit_point_definitions d
                LEFT JOIN taxes t ON t.id = d.tax_id
                WHERE 1=1`;
     const params = [];
 
-    if (category) { sql += ` AND d.category = ?`; params.push(category); }
-    if (tax) { sql += ` AND t.code = ?`; params.push(tax); }
-    if (nature) { sql += ` AND d.nature = ?`; params.push(nature); }
+    if (category)    { sql += ` AND d.category = ?`;       params.push(category); }
+    if (tax)         { sql += ` AND t.code = ?`;           params.push(tax); }
+    if (nature)      { sql += ` AND d.nature = ?`;         params.push(nature); }
+    if (always_show !== undefined) {
+      sql += ` AND d.always_show = ?`;
+      params.push(always_show === '1' || always_show === 'true' ? 1 : 0);
+    }
     if (search) {
       sql += ` AND (d.name LIKE ? OR d.external_id LIKE ?)`;
       params.push(`%${search}%`, `%${search}%`);
@@ -549,7 +564,7 @@ async function updateDefinitionName(req, res, next) {
     if (!existing[0]) throw new ApiError(404, 'Definição de ponto não encontrada.');
 
     const updates = {};
-    if (name !== undefined) updates.name = name.trim();
+    if (name !== undefined)     updates.name       = name.trim();
     if (riskColor !== undefined) updates.risk_color = riskColor;
     if (taxCode !== undefined) {
       const [taxRows] = await pool.query(`SELECT id FROM taxes WHERE code = ?`, [taxCode]);
@@ -566,14 +581,15 @@ async function updateDefinitionName(req, res, next) {
     );
 
     await logAction(req, {
-      action: 'CREDIT_POINT_DEF_UPDATED',
+      action:     'CREDIT_POINT_DEF_UPDATED',
       entityType: 'credit_point_definitions',
-      entityId: Number(id),
-      details: { before: existing[0], updates },
+      entityId:   Number(id),
+      details:    { before: existing[0], updates },
     });
 
     const [updated] = await pool.query(
-      `SELECT d.id, d.category, d.tax_id, t.code AS tax_code, d.nature, d.external_id, d.name, d.risk_color, d.updated_at
+      `SELECT d.id, d.category, d.tax_id, t.code AS tax_code, d.nature,
+              d.external_id, d.name, d.risk_color, d.always_show, d.updated_at
        FROM credit_point_definitions d LEFT JOIN taxes t ON t.id = d.tax_id WHERE d.id = ?`,
       [id]
     );
@@ -583,12 +599,76 @@ async function updateDefinitionName(req, res, next) {
   }
 }
 
+// ─── Toggle always_show (ponto fixo / ponto principal) ───────────────────────
+/**
+ * PATCH /credit-point-definitions/:id/always-show
+ * Marca ou desmarca um ponto como "ponto fixo" (always_show).
+ * Pontos fixos aparecem no diagnóstico de todos os jobs, mesmo sem importação.
+ *
+ * Body: { always_show: true | false }
+ * Permissão: admin apenas.
+ */
+async function toggleAlwaysShow(req, res, next) {
+  try {
+    const { id }         = req.params;
+    const { always_show } = req.body;
+
+    if (typeof always_show !== 'boolean') {
+      throw new ApiError(400, '"always_show" deve ser true ou false.');
+    }
+
+    const [existing] = await pool.query(
+      `SELECT id, name, category, always_show FROM credit_point_definitions WHERE id = ?`,
+      [id]
+    );
+    if (!existing[0]) throw new ApiError(404, 'Definição de ponto não encontrada.');
+
+    // Nada a fazer se o estado já é o desejado
+    if (!!existing[0].always_show === always_show) {
+      return res.json({
+        data: {
+          id:          existing[0].id,
+          name:        existing[0].name,
+          category:    existing[0].category,
+          always_show,
+        },
+      });
+    }
+
+    await pool.query(
+      `UPDATE credit_point_definitions SET always_show = ? WHERE id = ?`,
+      [always_show ? 1 : 0, id]
+    );
+
+    await logAction(req, {
+      action:     always_show
+        ? 'CREDIT_POINT_DEF_MARKED_PRINCIPAL'
+        : 'CREDIT_POINT_DEF_UNMARKED_PRINCIPAL',
+      entityType: 'credit_point_definitions',
+      entityId:   Number(id),
+      details:    {
+        name:        existing[0].name,
+        category:    existing[0].category,
+        always_show,
+      },
+    });
+
+    res.json({
+      data: {
+        id:          existing[0].id,
+        name:        existing[0].name,
+        category:    existing[0].category,
+        always_show,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 /**
  * POST /credit-point-definitions/bulk-import
- * (Importação em massa da tabela mestre — PRT/Fintax. Ver nota no início
- * do arquivo sobre por que IPI/IR-CSLL não usam mais este mecanismo de
- * match automático para os VALORES por job — isto aqui é só para o
- * catálogo/definições, continua igual.)
+ * (Importação em massa da tabela mestre — PRT/Fintax.)
  */
 async function bulkImportDefinitions(req, res, next) {
   try {
@@ -598,8 +678,8 @@ async function bulkImportDefinitions(req, res, next) {
 
     const conn = await pool.getConnection();
     let inserted = 0;
-    let updated = 0;
-    let skipped = 0;
+    let updated  = 0;
+    let skipped  = 0;
     const unknownTaxCodes = new Set();
 
     try {
@@ -617,7 +697,7 @@ async function bulkImportDefinitions(req, res, next) {
 
       for (const row of rows) {
         const externalId = String(row.external_id ?? '').trim();
-        const name = String(row.name ?? '').trim();
+        const name       = String(row.name ?? '').trim();
         if (!externalId || !name) { skipped += 1; continue; }
 
         const rowTaxCode = row.tax_code || defaultTaxCode;
@@ -631,15 +711,15 @@ async function bulkImportDefinitions(req, res, next) {
 
         const riskColor = category === 'FTX' && VALID_COLORS.includes(row.risk_color) ? row.risk_color : null;
 
-        const [existing] = await conn.query(
+        const [existingRow] = await conn.query(
           `SELECT id FROM credit_point_definitions WHERE category = ? AND external_id = ? LIMIT 1`,
           [category, externalId]
         );
 
-        if (existing[0]) {
+        if (existingRow[0]) {
           await conn.query(
             `UPDATE credit_point_definitions SET name = ?, risk_color = ?, tax_id = ?, nature = ? WHERE id = ?`,
-            [name, riskColor, taxId, rowNature, existing[0].id]
+            [name, riskColor, taxId, rowNature, existingRow[0].id]
           );
           updated += 1;
         } else {
@@ -661,7 +741,7 @@ async function bulkImportDefinitions(req, res, next) {
     }
 
     await logAction(req, {
-      action: 'CREDIT_POINT_DEFS_BULK_IMPORTED',
+      action:     'CREDIT_POINT_DEFS_BULK_IMPORTED',
       entityType: 'credit_point_definitions',
       details: {
         category, default_tax_code: defaultTaxCode, default_nature: defaultNature,
@@ -679,23 +759,20 @@ async function bulkImportDefinitions(req, res, next) {
 /**
  * POST /credit-point-definitions/quick-create
  * Criação manual de UM ponto, usada pelos wizards de IPI/IR-CSLL quando o
- * usuário confirma explicitamente "não existe no catálogo, criar novo"
- * (nunca automático/silencioso). external_id fica com um marcador
- * "manual:<id>" só para satisfazer a constraint de unicidade — esses
- * pontos não têm um ID de origem real.
+ * usuário confirma explicitamente "não existe no catálogo, criar novo".
  */
 async function quickCreateDefinition(req, res, next) {
   try {
     const { category, tax_code: taxCode, name, nature } = req.body;
     if (!['ADM', 'FTX'].includes(category)) throw new ApiError(400, 'Categoria inválida.');
-    if (!taxCode) throw new ApiError(400, 'Tributo é obrigatório.');
+    if (!taxCode)              throw new ApiError(400, 'Tributo é obrigatório.');
     if (!name || !name.trim()) throw new ApiError(400, 'Nome é obrigatório.');
 
     const [taxRows] = await pool.query('SELECT id FROM taxes WHERE code = ?', [taxCode]);
     if (!taxRows[0]) throw new ApiError(400, 'Tributo inválido.');
 
     const finalNature = VALID_NATURES.includes(nature) ? nature : 'CREDITO';
-    const externalId = `manual:${Date.now()}${Math.floor(Math.random() * 1000)}`;
+    const externalId  = `manual:${Date.now()}${Math.floor(Math.random() * 1000)}`;
 
     const [result] = await pool.query(
       `INSERT INTO credit_point_definitions (category, tax_id, nature, external_id, name)
@@ -704,10 +781,10 @@ async function quickCreateDefinition(req, res, next) {
     );
 
     await logAction(req, {
-      action: 'CREDIT_POINT_DEF_QUICK_CREATED',
+      action:     'CREDIT_POINT_DEF_QUICK_CREATED',
       entityType: 'credit_point_definitions',
-      entityId: result.insertId,
-      details: { category, tax_code: taxCode, nature: finalNature, name },
+      entityId:   result.insertId,
+      details:    { category, tax_code: taxCode, nature: finalNature, name },
     });
 
     res.status(201).json({ data: { id: result.insertId, name: name.trim(), external_id: externalId } });
@@ -726,33 +803,24 @@ async function removeDefinition(req, res, next) {
     );
     if (!existing[0]) throw new ApiError(404, 'Definição de ponto não encontrada.');
 
-    const [[{ admCount }]] = await pool.query(
-      `SELECT COUNT(*) AS admCount FROM pontos_adm WHERE credit_point_definition_id = ?`, [id]
-    );
-    const [[{ ftxCount }]] = await pool.query(
-      `SELECT COUNT(*) AS ftxCount FROM pontos_ftx WHERE credit_point_definition_id = ?`, [id]
-    );
-    const [[{ ipiCount }]] = await pool.query(
-      `SELECT COUNT(*) AS ipiCount FROM pontos_ipi WHERE credit_point_definition_id = ?`, [id]
-    );
-    const [[{ irCsllCount }]] = await pool.query(
-      `SELECT COUNT(*) AS irCsllCount FROM pontos_ir_csll WHERE credit_point_definition_id = ?`, [id]
-    );
-    const [[{ inssCount }]] = await pool.query(
-      `SELECT COUNT(*) AS inssCount FROM pontos_inss WHERE credit_point_definition_id = ?`, [id]
-    );
+    const [[{ admCount   }]] = await pool.query(`SELECT COUNT(*) AS admCount    FROM pontos_adm      WHERE credit_point_definition_id = ?`, [id]);
+    const [[{ ftxCount   }]] = await pool.query(`SELECT COUNT(*) AS ftxCount    FROM pontos_ftx      WHERE credit_point_definition_id = ?`, [id]);
+    const [[{ ipiCount   }]] = await pool.query(`SELECT COUNT(*) AS ipiCount    FROM pontos_ipi      WHERE credit_point_definition_id = ?`, [id]);
+    const [[{ irCsllCount}]] = await pool.query(`SELECT COUNT(*) AS irCsllCount FROM pontos_ir_csll  WHERE credit_point_definition_id = ?`, [id]);
+    const [[{ inssCount  }]] = await pool.query(`SELECT COUNT(*) AS inssCount   FROM pontos_inss     WHERE credit_point_definition_id = ?`, [id]);
+
     if (Number(admCount) + Number(ftxCount) + Number(ipiCount) + Number(irCsllCount) + Number(inssCount) > 0) {
       throw new ApiError(409, 'Não é possível excluir: este ponto já tem valores importados em algum job.');
     }
 
-    await pool.query(`DELETE FROM job_point_notes WHERE credit_point_definition_id = ?`, [id]);
+    await pool.query(`DELETE FROM job_point_notes         WHERE credit_point_definition_id = ?`, [id]);
     await pool.query(`DELETE FROM credit_point_definitions WHERE id = ?`, [id]);
 
     await logAction(req, {
-      action: 'CREDIT_POINT_DEF_DELETED',
+      action:     'CREDIT_POINT_DEF_DELETED',
       entityType: 'credit_point_definitions',
-      entityId: Number(id),
-      details: existing[0],
+      entityId:   Number(id),
+      details:    existing[0],
     });
 
     res.status(204).send();
@@ -763,8 +831,7 @@ async function removeDefinition(req, res, next) {
 
 /**
  * DELETE /credit-point-definitions
- * Zera TUDO relacionado a pontos: definições do catálogo global E todos os
- * valores já importados em QUALQUER job. Destrutivo e irreversível.
+ * Zera TUDO relacionado a pontos. Destrutivo e irreversível.
  */
 async function resetAllDefinitions(req, res, next) {
   const conn = await pool.getConnection();
@@ -790,19 +857,19 @@ async function resetAllDefinitions(req, res, next) {
     await conn.commit();
 
     const deleted = {
-      job_point_notes: c1,
-      pontos_adm: c2,
-      pontos_ftx: c3,
-      pontos_ipi: c4,
-      pontos_ir_csll: c5,
-      pontos_inss: c7,
+      job_point_notes:        c1,
+      pontos_adm:             c2,
+      pontos_ftx:             c3,
+      pontos_ipi:             c4,
+      pontos_ir_csll:         c5,
+      pontos_inss:            c7,
       credit_point_definitions: c6,
     };
 
     await logAction(req, {
-      action: 'CREDIT_POINT_DEFINITIONS_RESET_ALL',
+      action:     'CREDIT_POINT_DEFINITIONS_RESET_ALL',
       entityType: 'credit_point_definitions',
-      details: deleted,
+      details:    deleted,
     });
 
     res.json({ data: { deleted } });
@@ -822,4 +889,5 @@ module.exports = {
   listInss, bulkImportInss, clearInss,
   listDefinitions, updateDefinitionName, bulkImportDefinitions,
   quickCreateDefinition, removeDefinition, resetAllDefinitions,
+  toggleAlwaysShow,
 };

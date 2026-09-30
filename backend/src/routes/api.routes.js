@@ -53,73 +53,113 @@ router.delete('/jobs/:id',          authorize('admin'), jobController.remove);
 router.put('/jobs/:jobId/team',              jobController.setTeamMember);
 router.delete('/jobs/:jobId/team/:memberId', jobController.removeTeamMember);
 
-// Diagnóstico por ponto (ADM/FTX x PIS_COFINS/IPI/IRPJ_CSLL/INSS)
+// ─── Diagnóstico por ponto ────────────────────────────────────────────────────
+
+// Listagem de pontos e detalhe mensal — qualquer autenticado
 router.get('/jobs/:jobId/diagnostics/points',
   diagnosticsController.listPoints);
+
 router.get('/jobs/:jobId/diagnostics/points/:creditPointDefinitionId/monthly',
   diagnosticsController.getMonthly);
+
+// Progresso de validação do job — qualquer autenticado
+// Usado pela lista de jobs (flag visual) e barra de progresso
+router.get('/jobs/:jobId/diagnostics/progress',
+  diagnosticsController.getProgress);
+
+// Analista (ou admin) escreve/edita as observations do ponto
+// Ao editar, review_status volta para PENDING automaticamente
 router.put('/jobs/:jobId/diagnostics/points/:creditPointDefinitionId',
   diagnosticsController.updateNote);
 
-// Resultado (confirmação de pontos + geração da apresentação final)
+// Admin aprova ou devolve um ponto com nota de revisão
+// Body: { review_status: 'APPROVED' | 'NEEDS_REVIEW', review_note?: string }
+router.patch('/jobs/:jobId/diagnostics/points/:creditPointDefinitionId/review',
+  authorize('admin'),
+  diagnosticsController.reviewPoint);
+
+// ─── Resultado ────────────────────────────────────────────────────────────────
+
 router.get('/jobs/:jobId/resultado/summary',
   resultadoController.getSummary);
+
 router.patch('/jobs/:jobId/resultado/points/:creditPointDefinitionId',
   resultadoController.toggleConfirm);
+
 router.post(`/jobs/:jobId/resultado/gerar-ppt`,
   (req, _res, next) => { req.body = req.body || {}; next(); },
   resultadoController.generatePpt);
 
-// PER/DCOMP
+// Gera o Parecer Técnico Studio Fiscal em PDF
+// Body: { observations: string }
+router.post('/jobs/:jobId/resultado/gerar-parecer',
+  diagnosticsController.generateParecer);
+
+// Gera o PDF do formulário de Diagnóstico (Q1–Q8)
+// Body: DiagnosticPdfFormData
+router.post('/jobs/:jobId/diagnostics/gerar-pdf',
+  diagnosticsController.generateDiagnosticoPdf);
+
+// ─── PER/DCOMP ───────────────────────────────────────────────────────────────
+
 router.get('/jobs/:jobId/perdcomps',                  perdcompController.list);
 router.post('/jobs/:jobId/perdcomps/bulk-import',     perdcompController.bulkImport);
 router.delete('/jobs/:jobId/perdcomps/:id',           perdcompController.remove);
 router.delete('/jobs/:jobId/perdcomps',               perdcompController.clearAll);
 
-// DARF
+// ─── DARF ─────────────────────────────────────────────────────────────────────
+
 router.get('/jobs/:jobId/darf-entries',               darfController.listDarf);
 router.post('/jobs/:jobId/darf-entries/bulk-import',  darfController.bulkImportDarf);
 router.delete('/jobs/:jobId/darf-entries/:id',        darfController.removeDarf);
 router.delete('/jobs/:jobId/darf-entries',            darfController.clearDarf);
 
-// SPED M400
+// ─── SPED M400 ────────────────────────────────────────────────────────────────
+
 router.get('/jobs/:jobId/sped/m400',                  darfController.listM400);
 router.post('/jobs/:jobId/sped/m400/bulk-import',     darfController.bulkImportM400);
 router.delete('/jobs/:jobId/sped/m400/:id',           darfController.removeM400);
 router.delete('/jobs/:jobId/sped/m400',               darfController.clearM400);
 
-// SPED M610
+// ─── SPED M610 ────────────────────────────────────────────────────────────────
+
 router.get('/jobs/:jobId/sped/m610',                  darfController.listM610);
 router.post('/jobs/:jobId/sped/m610/bulk-import',     darfController.bulkImportM610);
 router.delete('/jobs/:jobId/sped/m610/:id',           darfController.removeM610);
 router.delete('/jobs/:jobId/sped/m610',               darfController.clearM610);
 
-// Pontos ADM — PIS/COFINS
+// ─── Pontos ADM — PIS/COFINS ─────────────────────────────────────────────────
+
 router.get('/jobs/:jobId/pontos-adm',                 pontosController.listAdm);
 router.post('/jobs/:jobId/pontos-adm/bulk-import',    pontosController.bulkImportAdm);
 router.delete('/jobs/:jobId/pontos-adm',              pontosController.clearAdm);
 
-// Pontos FTX — PIS/COFINS
+// ─── Pontos FTX — PIS/COFINS ─────────────────────────────────────────────────
+
 router.get('/jobs/:jobId/pontos-ftx',                 pontosController.listFtx);
 router.post('/jobs/:jobId/pontos-ftx/bulk-import',    pontosController.bulkImportFtx);
 router.delete('/jobs/:jobId/pontos-ftx',              pontosController.clearFtx);
 
-// Pontos IPI
+// ─── Pontos IPI ───────────────────────────────────────────────────────────────
+
 router.get('/jobs/:jobId/pontos-ipi',                 pontosController.listIpi);
 router.post('/jobs/:jobId/pontos-ipi/bulk-import',    pontosController.bulkImportIpi);
 router.delete('/jobs/:jobId/pontos-ipi',              pontosController.clearIpi);
 
-// Pontos IR/CSLL
+// ─── Pontos IR/CSLL ───────────────────────────────────────────────────────────
+
 router.get('/jobs/:jobId/pontos-ir-csll',              pontosController.listIrCsll);
 router.post('/jobs/:jobId/pontos-ir-csll/bulk-import', pontosController.bulkImportIrCsll);
 router.delete('/jobs/:jobId/pontos-ir-csll',           pontosController.clearIrCsll);
 
-// Pontos INSS
+// ─── Pontos INSS ──────────────────────────────────────────────────────────────
+
 router.get('/jobs/:jobId/pontos-inss',                 pontosController.listInss);
 router.post('/jobs/:jobId/pontos-inss/bulk-import',    pontosController.bulkImportInss);
 router.delete('/jobs/:jobId/pontos-inss',              pontosController.clearInss);
 
-// Definições de pontos (catálogo global)
+// ─── Definições de pontos (catálogo global) ───────────────────────────────────
+
 router.get('/credit-point-definitions',                pontosController.listDefinitions);
 router.patch('/credit-point-definitions/:id',          pontosController.updateDefinitionName);
 router.post('/credit-point-definitions/bulk-import',   pontosController.bulkImportDefinitions);
@@ -127,7 +167,13 @@ router.post('/credit-point-definitions/quick-create',  pontosController.quickCre
 router.delete('/credit-point-definitions',             authorize('admin'), pontosController.resetAllDefinitions);
 router.delete('/credit-point-definitions/:id',         authorize('admin'), pontosController.removeDefinition);
 
-// Logs (admin)
+// Admin marca/desmarca ponto como "ponto fixo" (always_show)
+router.patch('/credit-point-definitions/:id/always-show',
+  authorize('admin'),
+  pontosController.toggleAlwaysShow);
+
+// ─── Logs (admin) ─────────────────────────────────────────────────────────────
+
 router.get('/logs',              authorize('admin'), logsController.list);
 router.get('/jobs/:jobId/logs',  authorize('admin'), logsController.listByJob);
 

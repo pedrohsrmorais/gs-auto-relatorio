@@ -2,8 +2,8 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Search, Trash2 } from "lucide-react";
-import { jobsApi } from "@/lib/api";
+import { Search, Trash2, AlertCircle } from "lucide-react";
+import { jobsApi, diagnosticsApi } from "@/lib/api";
 import type { Job, JobStatus } from "@/lib/types";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useAuth } from "@/lib/auth";
@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 export const Route = createFileRoute("/jobs/")({
   component: () => (
@@ -40,6 +41,51 @@ const STATUS_VARIANT: Record<JobStatus, "muted" | "default" | "warning" | "succe
   concluido: "success",
   cancelado: "destructive",
 };
+
+// ─── Flag de validação pendente (admin only) ──────────────────────────────────
+// Busca individualmente o progresso de cada job. O componente só é renderizado
+// quando isAdmin=true, então analistas nunca disparam essas queries.
+
+function DiagnosticFlag({ jobId }: { jobId: number }) {
+  const { data: progress } = useQuery({
+    queryKey: ["diagnostic-progress", jobId],
+    queryFn: () => diagnosticsApi.getProgress(jobId),
+    staleTime: 60_000,
+  });
+
+  // Sem dados ainda ou nenhum ponto com observação → sem flag
+  if (!progress || progress.total === 0) return null;
+
+  // Todos aprovados → sem flag (está tudo OK)
+  if (progress.all_approved) return null;
+
+  // Há pontos PENDING ou NEEDS_REVIEW → mostrar flag
+  const needsReviewCount = progress.NEEDS_REVIEW;
+  const pendingCount = progress.PENDING;
+
+  const tooltipText = [
+    needsReviewCount > 0 && `${needsReviewCount} ponto(s) devolvido(s) aguardando correção do analista`,
+    pendingCount > 0 && `${pendingCount} ponto(s) com análise aguardando sua validação`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="flex items-center gap-1 text-xs font-medium text-warning shrink-0">
+          <AlertCircle className="h-4 w-4" />
+          {progress.NEEDS_REVIEW > 0 ? "Correção pendente" : "Validação pendente"}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="left" className="max-w-xs text-xs">
+        {tooltipText}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+// ─── JobsListPage ─────────────────────────────────────────────────────────────
 
 function JobsListPage() {
   const { user } = useAuth();
@@ -105,14 +151,16 @@ function JobsListPage() {
         {data?.data.map((job) => (
           <div key={job.id} className="relative">
             <Link to="/jobs/$jobId" params={{ jobId: String(job.id) }}>
-              <Card className={`p-4 flex items-center justify-between hover:border-primary/40 transition-colors ${isAdmin ? "pr-14" : ""}`}>
-                <div className="min-w-0">
+              <Card className={`p-4 flex items-center justify-between gap-3 hover:border-primary/40 transition-colors ${isAdmin ? "pr-14" : ""}`}>
+                <div className="min-w-0 flex-1">
                   <p className="font-medium truncate">{job.job_number}</p>
                   <p className="text-sm text-muted-foreground truncate">
                     {job.company_name} · {job.cnpj}
                   </p>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
+                  {/* Flag de validação pendente — só para admins */}
+                  {isAdmin && <DiagnosticFlag jobId={job.id} />}
                   <span className="text-xs text-muted-foreground hidden sm:inline">
                     {job.period_start} — {job.period_end}
                   </span>
@@ -124,7 +172,7 @@ function JobsListPage() {
               <Button
                 variant="ghost" size="icon"
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                onClick={() => setDeleteTarget(job)}
+                onClick={(e) => { e.preventDefault(); setDeleteTarget(job); }}
               >
                 <Trash2 className="h-4 w-4" />
               </Button>

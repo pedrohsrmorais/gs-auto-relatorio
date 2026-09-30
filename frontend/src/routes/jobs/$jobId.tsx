@@ -131,10 +131,29 @@ function OverviewPanel({ jobId }: { jobId: number }) {
 }
 
 // ─── useJobProgress ───────────────────────────────────────────────────────────
-// Usa as mesmas queryKeys com (category, tax) que ResultadoPanel e
-// CategoryTaxTable usam → tudo do cache, sem fetch extra.
+//
+// Lógica de progresso em 4 estágios conforme acordado:
+//
+//   Coleta (imports):          peso 33% do total
+//   Diagnóstico (análises):    peso 22% (chega a 55% combinado)
+//   Diagnóstico (validações):  peso 25% (chega a 80% combinado)
+//   Resultado (PPT gerado):    peso 20% (chega a 100%)
+//
+// Na prática exibimos 3 barras separadas na UI:
+//   coletaPct      → 0-100 de quantas fontes têm dados
+//   diagnosticoPct → 0-100 calculado pelo backend via getProgress()
+//                    (combina análises escritas + validações aprovadas)
+//   resultadoPct   → 0-100 de quantos pontos foram confirmados no Resultado
+//
+// O overallPct mapeia os 3 para a escala de 4 estágios:
+//   0%  → sem imports
+//   33% → tem imports, sem análises
+//   55% → tem análises escritas, sem validação
+//   80% → validações completas (all_approved), sem PPT
+//   100%→ PPT gerado (resultadoPct = 100%)
 
 function useJobProgress(jobId: number) {
+  // ── Coleta: 6 fontes de dados ──────────────────────────────────────────────
   const sourceQueries = useQueries({
     queries: [
       { queryKey: ["perdcomps",    jobId], queryFn: () => perdcompApi.list(jobId)  },
@@ -146,22 +165,36 @@ function useJobProgress(jobId: number) {
     ],
   });
 
-  // Diagnóstico: lemos ADM+FTX / PIS_COFINS apenas (proxy do progresso geral
-  // de revisão de observações — mesma lógica anterior).
-  const { data: admPoints = [] } = useQuery({
-    queryKey: ["diagnostic-points", jobId, "ADM", "PIS_COFINS"],
-    queryFn: () => diagnosticsApi.listPoints(jobId, "ADM", "PIS_COFINS"),
-    staleTime: 30_000,
-  });
-  const { data: ftxPoints = [] } = useQuery({
-    queryKey: ["diagnostic-points", jobId, "FTX", "PIS_COFINS"],
-    queryFn: () => diagnosticsApi.listPoints(jobId, "FTX", "PIS_COFINS"),
+  const importedSourcesCount = sourceQueries.filter((q) => (q.data?.length ?? 0) > 0).length;
+  const coletaPct = Math.round((importedSourcesCount / sourceQueries.length) * 100);
+
+  // ── Diagnóstico: usa o endpoint dedicado do backend ───────────────────────
+  // getProgress() retorna { PENDING, NEEDS_REVIEW, APPROVED, total, percentage, all_approved }
+  // onde percentage = APPROVED/total * 100
+  const { data: diagProgress } = useQuery({
+    queryKey: ["diagnostic-progress", jobId],
+    queryFn: () => diagnosticsApi.getProgress(jobId),
     staleTime: 30_000,
   });
 
-  // Resultado: lemos todas as combinações para contar confirmados.
-  // ResultadoPanel já buscou esses dados quando o usuário visitou a aba —
-  // aqui eles vêm do cache (staleTime 30s), sem chamada extra.
+  // Percentual de análises escritas (qualquer ponto com observations != null)
+  // = (PENDING + NEEDS_REVIEW + APPROVED) / total — que é simplesmente
+  // diagProgress.total / totalPossível. Como não temos totalPossível facilmente,
+  // usamos o % de aprovação como proxy do estágio de validação, e presence de
+  // total > 0 como proxy do estágio de análise.
+  const hasAnyAnalysis = (diagProgress?.total ?? 0) > 0;
+  const allApproved = diagProgress?.all_approved ?? false;
+  const approvalPct = diagProgress?.percentage ?? 0; // 0-100 de aprovados
+
+  // diagnosticoPct para exibição na barra individual (0-100)
+  // Representa: escreveu análises + foram validadas
+  const diagnosticoPct = !hasAnyAnalysis
+    ? 0
+    : allApproved
+    ? 100
+    : Math.min(Math.round(approvalPct * 0.7), 70); // chega a 70% quando tudo está pending/needs_review
+
+  // ── Resultado: pontos confirmados em todas as combinações ─────────────────
   const diagnosticQueries = useQueries({
     queries: DIAGNOSTIC_COMBOS.map(({ category, tax }) => ({
       queryKey: ["diagnostic-points", jobId, category, tax] as const,
@@ -169,17 +202,6 @@ function useJobProgress(jobId: number) {
       staleTime: 30_000,
     })),
   });
-
-  const importedSourcesCount = sourceQueries.filter((q) => (q.data?.length ?? 0) > 0).length;
-  const coletaPct = Math.round((importedSourcesCount / sourceQueries.length) * 100);
-
-  const allPisCofinsPoints = [...admPoints, ...ftxPoints];
-  const reviewedPoints = allPisCofinsPoints.filter(
-    (p) => (p.observations ?? "").trim().length > 0
-  ).length;
-  const diagnosticoPct = allPisCofinsPoints.length
-    ? Math.round((reviewedPoints / allPisCofinsPoints.length) * 100)
-    : 0;
 
   const totalAllPoints = diagnosticQueries.reduce(
     (acc, q) => acc + (q.data?.length ?? 0), 0
@@ -191,9 +213,25 @@ function useJobProgress(jobId: number) {
     ? Math.round((confirmedPoints / totalAllPoints) * 100)
     : 0;
 
-  const overallPct = Math.round((coletaPct + diagnosticoPct + resultadoPct) / 3);
+  // ── Overall: mapeamento nos 4 estágios ────────────────────────────────────
+  let overallPct: number;
+  if (resultadoPct === 100) {
+    overallPct = 100;
+  } else if (allApproved) {
+    // Validações completas + progresso do resultado
+    overallPct = 80 + Math.round(resultadoPct * 0.20);
+  } else if (hasAnyAnalysis) {
+    // Tem análises escritas, parcialmente ou totalmente validadas
+    overallPct = 55 + Math.round(approvalPct * 0.25);
+  } else if (importedSourcesCount > 0) {
+    // Tem imports, sem análises ainda
+    overallPct = 33 + Math.round(coletaPct * 0.22);
+  } else {
+    // Só imports parciais ou nenhum
+    overallPct = Math.round(coletaPct * 0.33);
+  }
 
-  return { coletaPct, diagnosticoPct, resultadoPct, overallPct };
+  return { coletaPct, diagnosticoPct, resultadoPct, overallPct, allApproved };
 }
 
 // ─── JobWizardPage ────────────────────────────────────────────────────────────
@@ -271,7 +309,14 @@ function JobWizardPage() {
           {section === "overview"    && <OverviewPanel jobId={jobId} />}
           {section === "coleta"      && <ColetaPanel jobId={jobId} />}
           {section === "diagnostico" && <DiagnosticoPanel jobId={jobId} />}
-          {section === "resultado"   && <ResultadoPanel jobId={jobId} jobNumber={job.job_number} />}
+          {section === "resultado" && (
+            <ResultadoPanel
+              jobId={job.id}
+              jobNumber={job.job_number}
+              companyName={job.company_name}
+              taxRegime={job.tax_regime ?? undefined}
+            />
+          )}
         </div>
       </div>
     </div>

@@ -4,7 +4,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState, useRef, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Search, Pencil, Check, X, AlertCircle, UploadCloud, Trash2, ShieldAlert } from "lucide-react";
+import { Search, Pencil, Check, X, AlertCircle, UploadCloud, Trash2, ShieldAlert, Star, Loader2 } from "lucide-react";
 import { creditPointDefinitionsApi } from "@/lib/api";
 import type { PointDefinition, TaxCode } from "@/lib/api";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
@@ -16,6 +16,7 @@ import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { DefinitionsImportWizard } from "@/components/data-import/ImportWizards";
 
 // ─── Route ───────────────────────────────────────────────────────────────────
@@ -181,6 +182,58 @@ function EditableTax({ point }: { point: PointDefinition }) {
   );
 }
 
+// ─── Botão de ponto prioritário (star toggle) ─────────────────────────────────
+
+function AlwaysShowToggle({ point }: { point: PointDefinition }) {
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    mutationFn: (always_show: boolean) =>
+      creditPointDefinitionsApi.toggleAlwaysShow(point.id, always_show),
+    onSuccess: (_, always_show) => {
+      toast.success(
+        always_show
+          ? `"${point.name || `ID ${point.external_id}`}" marcado como prioritário.`
+          : `"${point.name || `ID ${point.external_id}`}" removido dos prioritários.`
+      );
+      queryClient.invalidateQueries({ queryKey: ["point-definitions"] });
+    },
+    onError: (err) =>
+      toast.error(err instanceof Error ? err.message : "Erro ao atualizar ponto prioritário."),
+  });
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={() => mutation.mutate(!point.always_show)}
+          disabled={mutation.isPending}
+          className={`h-8 w-8 shrink-0 flex items-center justify-center rounded transition-colors ${
+            point.always_show
+              ? "text-amber-500 hover:text-amber-600 hover:bg-amber-50"
+              : "text-muted-foreground/40 hover:text-amber-400 hover:bg-amber-50"
+          }`}
+          aria-label={point.always_show ? "Remover prioridade" : "Marcar como prioritário"}
+        >
+          {mutation.isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Star
+              className={`h-4 w-4 transition-all ${point.always_show ? "fill-current" : ""}`}
+            />
+          )}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="left" className="max-w-[200px] text-xs">
+        {point.always_show
+          ? "Ponto prioritário — aparece sempre no diagnóstico mesmo sem dados importados. Clique para remover."
+          : "Marcar como prioritário — o ponto sempre aparecerá no diagnóstico, mesmo sem dados importados."}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 // ─── Linha ────────────────────────────────────────────────────────────────────
 
 function PointRow({ point, onRequestDelete }: { point: PointDefinition; onRequestDelete: (p: PointDefinition) => void }) {
@@ -199,6 +252,7 @@ function PointRow({ point, onRequestDelete }: { point: PointDefinition; onReques
       <NatureBadge nature={point.nature} />
       {point.category === "FTX" && <RiskColorBadge color={point.risk_color} />}
       <EditableName point={point} />
+      <AlwaysShowToggle point={point} />
       <Button
         size="icon" variant="ghost"
         className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
@@ -216,6 +270,7 @@ function PointDefinitionsPage() {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [taxFilter, setTaxFilter] = useState<string>("all");
+  const [showOnlyFixed, setShowOnlyFixed] = useState(false);
   const [importCategory, setImportCategory] = useState<"ADM" | "FTX" | null>(null);
   const [importTax, setImportTax] = useState<TaxCode>("PIS_COFINS");
   const [deleteTarget, setDeleteTarget] = useState<PointDefinition | null>(null);
@@ -224,12 +279,13 @@ function PointDefinitionsPage() {
   const queryClient = useQueryClient();
 
   const { data = [], isLoading } = useQuery({
-    queryKey: ["point-definitions", search, categoryFilter, taxFilter],
+    queryKey: ["point-definitions", search, categoryFilter, taxFilter, showOnlyFixed],
     queryFn: () =>
       creditPointDefinitionsApi.list({
         search: search || undefined,
         category: categoryFilter !== "all" ? (categoryFilter as "ADM" | "FTX") : undefined,
         tax: taxFilter !== "all" ? (taxFilter as TaxCode) : undefined,
+        always_show: showOnlyFixed ? true : undefined,
       }),
   });
 
@@ -257,6 +313,7 @@ function PointDefinitionsPage() {
 
   const unnamed = data.filter((p) => !p.name || p.name.trim() === "");
   const named   = data.filter((p) => p.name && p.name.trim() !== "");
+  const fixedCount = data.filter((p) => p.always_show).length;
 
   function openImport(category: "ADM" | "FTX", tax: TaxCode) {
     setImportCategory(category);
@@ -271,8 +328,8 @@ function PointDefinitionsPage() {
           <p className="text-sm text-muted-foreground">
             Catálogo global de pontos ADM e FTX, com o tributo (PIS/COFINS, IPI, IRPJ/CSLL, INSS, ICMS) de cada
             um. Importe a tabela mestre para popular nome, cor e tributo de uma vez, ou edite ponto a ponto
-            clicando na linha. Um job que importar um ID_PONTO já cadastrado aqui é associado automaticamente
-            a este mesmo ponto.
+            clicando na linha. Use a estrela (⭐) para marcar pontos prioritários — eles aparecem sempre no
+            diagnóstico, mesmo sem dados importados.
           </p>
         </div>
         <div className="flex gap-2 shrink-0 flex-wrap">
@@ -321,6 +378,16 @@ function PointDefinitionsPage() {
             {TAX_OPTIONS.map((t) => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
           </SelectContent>
         </Select>
+        {/* Filtro "Apenas prioritários" */}
+        <Button
+          variant={showOnlyFixed ? "default" : "outline"}
+          size="sm"
+          onClick={() => setShowOnlyFixed((v) => !v)}
+          className={showOnlyFixed ? "gap-1.5" : "gap-1.5 text-muted-foreground"}
+        >
+          <Star className={`h-4 w-4 ${showOnlyFixed ? "fill-current" : ""}`} />
+          Prioritários
+        </Button>
       </div>
 
       {!isLoading && data.length > 0 && (
@@ -328,6 +395,15 @@ function PointDefinitionsPage() {
           <span>
             {data.length} ponto{data.length !== 1 ? "s" : ""} encontrado{data.length !== 1 ? "s" : ""}
           </span>
+          {fixedCount > 0 && !showOnlyFixed && (
+            <>
+              <span>·</span>
+              <span className="text-amber-600 font-medium flex items-center gap-1">
+                <Star className="h-3.5 w-3.5 fill-current" />
+                {fixedCount} prioritário{fixedCount !== 1 ? "s" : ""}
+              </span>
+            </>
+          )}
           {unnamed.length > 0 && (
             <>
               <span>·</span>
@@ -345,8 +421,9 @@ function PointDefinitionsPage() {
       {!isLoading && data.length === 0 && (
         <Card className="p-10 text-center">
           <p className="text-sm text-muted-foreground">
-            Nenhum ponto encontrado. Importe a tabela mestre acima, ou importe dados na aba{" "}
-            <strong>Coleta de Dados</strong> de um job para criar definições automaticamente.
+            {showOnlyFixed
+              ? "Nenhum ponto prioritário encontrado. Clique na estrela ao lado de um ponto para marcá-lo."
+              : "Nenhum ponto encontrado. Importe a tabela mestre acima, ou importe dados na aba Coleta de Dados de um job para criar definições automaticamente."}
           </p>
         </Card>
       )}

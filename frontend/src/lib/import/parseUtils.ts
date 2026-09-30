@@ -407,12 +407,19 @@ export function buildPreview(
           break;
         }
         case "enum": {
-          if (rawValue && col.enumValues && !col.enumValues.includes(rawValue.toUpperCase())) {
-            messages.push(`${col.label}: valor "${rawValue}" não reconhecido`);
-          }
-          data[col.key] = rawValue ? rawValue.toUpperCase() : null;
-          break;
+        const normalized = rawValue
+          .trim()
+          .toUpperCase()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "") // remove acentos: Ã → A, etc.
+          .replace(/\s+/g, "_");           // espaços → underscore
+        const finalValue = rawValue ? normalized : null;
+        if (rawValue && col.enumValues && !col.enumValues.includes(normalized)) {
+          messages.push(`${col.label}: valor "${rawValue}" não reconhecido`);
         }
+        data[col.key] = finalValue;
+        break;
+      }
         case "text":
         default:
           data[col.key] = rawValue || null;

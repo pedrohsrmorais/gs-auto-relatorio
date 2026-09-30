@@ -170,6 +170,8 @@ export interface PointDefinition {
   external_id: string;
   name: string;
   risk_color: "VERDE" | "AMARELO" | "VERMELHO" | null;
+  /** true quando o ponto está marcado como prioritário/fixo (always_show=1 no banco) */
+  always_show: boolean;
   updated_at: string;
 }
 
@@ -189,7 +191,14 @@ export interface DefinitionBulkImportResult {
 }
 
 export const creditPointDefinitionsApi = {
-  async list(params: { category?: "ADM" | "FTX"; tax?: TaxCode; nature?: PointNature; search?: string } = {}): Promise<PointDefinition[]> {
+  async list(params: {
+    category?: "ADM" | "FTX";
+    tax?: TaxCode;
+    nature?: PointNature;
+    search?: string;
+    /** Se true, retorna apenas pontos marcados como prioritários/fixos */
+    always_show?: boolean;
+  } = {}): Promise<PointDefinition[]> {
     const res = await http.get<{ data: PointDefinition[] }>(`/credit-point-definitions?${qs(params)}`);
     return res.data.data;
   },
@@ -203,6 +212,17 @@ export const creditPointDefinitionsApi = {
   },
   async updateTax(id: number, taxCode: TaxCode): Promise<PointDefinition> {
     const res = await http.patch<{ data: PointDefinition }>(`/credit-point-definitions/${id}`, { tax_code: taxCode });
+    return res.data.data;
+  },
+  /**
+   * [Admin only] Marca ou desmarca um ponto como prioritário/fixo (always_show).
+   * Pontos prioritários aparecem sempre no diagnóstico, mesmo sem dados importados.
+   */
+  async toggleAlwaysShow(id: number, always_show: boolean): Promise<{ id: number; name: string; category: string; always_show: boolean }> {
+    const res = await http.patch<{ data: { id: number; name: string; category: string; always_show: boolean } }>(
+      `/credit-point-definitions/${id}/always-show`,
+      { always_show }
+    );
     return res.data.data;
   },
   async bulkImport(
@@ -300,6 +320,9 @@ export const jobDiagnosticApi = {
 export type DiagnosticCategory = "ADM" | "FTX";
 export type DiagnosticTax = "PIS_COFINS" | "IPI" | "IRPJ_CSLL" | "INSS";
 
+/** Status de revisão de um ponto de diagnóstico */
+export type ReviewStatus = "PENDING" | "NEEDS_REVIEW" | "APPROVED";
+
 export interface DiagnosticBreakdownItem {
   label: string;
   value: number;
@@ -315,6 +338,16 @@ export interface DiagnosticPointSummary {
   observations: string | null;
   /** true quando o ponto foi marcado como "OK" no módulo Resultado */
   confirmed: boolean;
+  /** Estado de revisão do ponto pelo administrador */
+  review_status: ReviewStatus;
+  /** Nota deixada pelo admin ao devolver o ponto para revisão */
+  review_note: string | null;
+  /** ID do usuário admin que fez a última revisão */
+  reviewed_by: number | null;
+  /** Timestamp da última revisão */
+  reviewed_at: string | null;
+  /** true quando o ponto é prioritário/fixo (always_show=1) — aparece sempre no diagnóstico */
+  is_fixed_point?: boolean;
   // Campos legados (só vêm quando tax=PIS_COFINS ou IRPJ_CSLL)
   pis_total?: number;
   cofins_total?: number;
@@ -331,26 +364,156 @@ export interface DiagnosticMonthlyRow {
   csll_value?: number;
 }
 
+/** Resultado de PATCH .../review */
+export interface ReviewPointResult {
+  data: {
+    job_id: number;
+    credit_point_definition_id: number;
+    observations: string | null;
+    confirmed_in_result: boolean;
+    review_status: ReviewStatus;
+    review_note: string | null;
+    reviewed_by: number | null;
+    reviewed_at: string | null;
+    updated_at: string;
+  };
+  /** Indica se todos os pontos do job estão aprovados após esta ação */
+  meta: { all_points_approved: boolean };
+}
+
+/** Progresso de validação do Diagnóstico de um job */
+export interface DiagnosticProgress {
+  PENDING: number;
+  NEEDS_REVIEW: number;
+  APPROVED: number;
+  total: number;
+  all_approved: boolean;
+  /** 0–100, calculado como APPROVED/total */
+  percentage: number;
+}
+
+/** Dados do formulário de Diagnóstico PDF (Q1–Q7 + Obs) */
+export interface DiagnosticPdfFormData {
+  q1_paga_darf: string;
+  q2_pis_cofins_mes: number;
+  q2_irpj_csll_mes: number;
+  q2_inss_mes: number;
+  q2_ipi_mes: number;
+  q3_recolhimento: string;
+  q4_oportunidades_500k: string;
+  q5_credita_risco: string;
+  q6_dividas_rfb: string;
+  q7_explique: string;
+  obs: string;
+}
+
 export const diagnosticsApi = {
-  async listPoints(jobId: number, category: DiagnosticCategory, tax: DiagnosticTax = "PIS_COFINS"): Promise<DiagnosticPointSummary[]> {
+  async listPoints(
+    jobId: number,
+    category: DiagnosticCategory,
+    tax: DiagnosticTax = "PIS_COFINS"
+  ): Promise<DiagnosticPointSummary[]> {
     const res = await http.get<{ data: DiagnosticPointSummary[] }>(
       `/jobs/${jobId}/diagnostics/points?${qs({ category, tax })}`
     );
     return res.data.data;
   },
+
   async getMonthly(
-    jobId: number, creditPointDefinitionId: number, category: DiagnosticCategory, tax: DiagnosticTax = "PIS_COFINS"
+    jobId: number,
+    creditPointDefinitionId: number,
+    category: DiagnosticCategory,
+    tax: DiagnosticTax = "PIS_COFINS"
   ): Promise<DiagnosticMonthlyRow[]> {
     const res = await http.get<{ data: DiagnosticMonthlyRow[] }>(
       `/jobs/${jobId}/diagnostics/points/${creditPointDefinitionId}/monthly?${qs({ category, tax })}`
     );
     return res.data.data;
   },
-  async updateNote(jobId: number, creditPointDefinitionId: number, data: { observations?: string | null }) {
+
+  /**
+   * Analista (ou admin) atualiza as observations de um ponto.
+   * Ao salvar, review_status é resetado para PENDING automaticamente.
+   */
+  async updateNote(
+    jobId: number,
+    creditPointDefinitionId: number,
+    data: { observations?: string | null }
+  ) {
     const res = await http.put<{ data: unknown }>(
-      `/jobs/${jobId}/diagnostics/points/${creditPointDefinitionId}`, data
+      `/jobs/${jobId}/diagnostics/points/${creditPointDefinitionId}`,
+      data
     );
     return res.data.data;
+  },
+
+  /**
+   * [Admin only] Aprova ou devolve um ponto para revisão.
+   *
+   * - APPROVED:      limpa a review_note
+   * - NEEDS_REVIEW:  review_note é obrigatória
+   *
+   * A resposta inclui `meta.all_points_approved` para o frontend
+   * saber se o job está pronto para avançar sem precisar de outra query.
+   */
+  async reviewPoint(
+    jobId: number,
+    creditPointDefinitionId: number,
+    review_status: "APPROVED" | "NEEDS_REVIEW",
+    review_note?: string
+  ): Promise<ReviewPointResult> {
+    const res = await http.patch<ReviewPointResult>(
+      `/jobs/${jobId}/diagnostics/points/${creditPointDefinitionId}/review`,
+      { review_status, review_note }
+    );
+    return res.data;
+  },
+
+  /**
+   * Retorna o progresso de validação do Diagnóstico para um job.
+   * Contagem de pontos por review_status + percentage (0–100) + all_approved.
+   * Use para:
+   *   - Barra de progresso dentro do job
+   *   - Flag visual na lista de jobs
+   */
+  async getProgress(jobId: number): Promise<DiagnosticProgress> {
+    const res = await http.get<{ data: DiagnosticProgress }>(
+      `/jobs/${jobId}/diagnostics/progress`
+    );
+    return res.data.data;
+  },
+
+  /**
+   * Gera o PDF do formulário de Diagnóstico (Q1–Q8) e dispara o download.
+   */
+  async generatePdf(
+    jobId: number,
+    data: DiagnosticPdfFormData,
+    jobNumber?: string
+  ): Promise<void> {
+    let res;
+    try {
+      res = await http.post(`/jobs/${jobId}/diagnostics/gerar-pdf`, data, {
+        responseType: "blob",
+      });
+    } catch (err) {
+      if (err instanceof AxiosError && err.response?.data instanceof Blob) {
+        const text = await err.response.data.text();
+        let message = "Erro ao gerar o diagnóstico PDF.";
+        try { message = JSON.parse(text)?.message ?? message; } catch { /* não era JSON */ }
+        throw new ApiError(err.response.status, message);
+      }
+      throw err;
+    }
+    const blob = new Blob([res.data], { type: "application/pdf" });
+    const url  = window.URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `Diagnostico_${jobNumber ?? jobId}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
   },
 };
 
@@ -376,6 +539,39 @@ export const resultadoApi = {
   }> {
     const res = await http.get<{ data: unknown }>(`/jobs/${jobId}/resultado/summary`);
     return res.data.data as any;
+  },
+
+  /**
+   * Gera o Parecer Técnico Studio Fiscal em PDF e dispara o download.
+   */
+  async generateParecer(
+    jobId: number,
+    data: { observations: string },
+    jobNumber?: string
+  ): Promise<void> {
+    let res;
+    try {
+      res = await http.post(`/jobs/${jobId}/resultado/gerar-parecer`, data, {
+        responseType: "blob",
+      });
+    } catch (err) {
+      if (err instanceof AxiosError && err.response?.data instanceof Blob) {
+        const text = await err.response.data.text();
+        let message = "Erro ao gerar o parecer.";
+        try { message = JSON.parse(text)?.message ?? message; } catch { /* não era JSON */ }
+        throw new ApiError(err.response.status, message);
+      }
+      throw err;
+    }
+    const blob = new Blob([res.data], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+    const url  = window.URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `Parecer_${jobNumber ?? jobId}.docx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
   },
 
   /**
