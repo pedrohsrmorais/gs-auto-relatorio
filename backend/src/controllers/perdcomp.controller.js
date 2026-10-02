@@ -1,4 +1,5 @@
 const { pool } = require('../config/database');
+const logService      = require('../services/logs.service');
 
 /* =====================================================================
  * perdcomp.controller.js — CRUD, importação em lote e desimportação (clear)
@@ -13,18 +14,6 @@ class ApiError extends Error {
 }
 
 const STATUS_VALUES = ['EM_ANALISE', 'HOMOLOGADA', 'NAO_HOMOLOGADA', 'CANCELADA', 'RETIFICADA'];
-
-async function logAction(req, { action, entityType = null, entityId = null, jobId = null, details = null }) {
-  try {
-    await pool.query(
-      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, job_id, details, ip_address)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [req.user?.id ?? null, action, entityType, entityId, jobId, details ? JSON.stringify(details) : null, req.ip ?? null]
-    );
-  } catch (err) {
-    console.error('Falha ao registrar log de auditoria:', err);
-  }
-}
 
 async function list(req, res, next) {
   try {
@@ -76,7 +65,7 @@ async function bulkImport(req, res, next) {
       conn.release();
     }
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'PERDCOMP_IMPORTED', entityType: 'job_perdcomp', jobId: Number(jobId),
       details: { inserted, total_rows: rows.length },
     });
@@ -92,7 +81,7 @@ async function remove(req, res, next) {
     const { jobId, id } = req.params;
     await pool.query(`DELETE FROM job_perdcomps WHERE job_id = ? AND id = ?`, [jobId, id]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'PERDCOMP_DELETED', entityType: 'job_perdcomp', entityId: Number(id), jobId: Number(jobId),
     });
 
@@ -115,7 +104,7 @@ async function clearAll(req, res, next) {
     const [[{ count }]] = await pool.query(`SELECT COUNT(*) AS count FROM job_perdcomps WHERE job_id = ?`, [jobId]);
     await pool.query(`DELETE FROM job_perdcomps WHERE job_id = ?`, [jobId]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'PERDCOMP_CLEARED', entityType: 'job_perdcomp', jobId: Number(jobId),
       details: { deleted: count },
     });

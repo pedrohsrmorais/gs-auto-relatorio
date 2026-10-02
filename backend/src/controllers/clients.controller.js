@@ -1,21 +1,14 @@
-const { pool } = require('../config/database');
+const { pool }       = require('../config/database');
+const logService      = require('../services/logs.service');
+
+/* =====================================================================
+ * clients.controller.js — CRUD de clientes.
+ * ===================================================================== */
 
 class ApiError extends Error {
   constructor(statusCode, message) {
     super(message);
     this.statusCode = statusCode;
-  }
-}
-
-async function logAction(req, { action, entityType = null, entityId = null, jobId = null, details = null }) {
-  try {
-    await pool.query(
-      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, job_id, details, ip_address)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [req.user?.id ?? null, action, entityType, entityId, jobId, details ? JSON.stringify(details) : null, req.ip ?? null]
-    );
-  } catch (err) {
-    console.error('Falha ao registrar log de auditoria:', err);
   }
 }
 
@@ -65,7 +58,7 @@ async function create(req, res, next) {
 
     const [rows] = await pool.query(`SELECT * FROM clients WHERE id = ?`, [result.insertId]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'CLIENT_CREATED', entityType: 'client', entityId: result.insertId,
       details: { company_name, cnpj: digitsOnly },
     });
@@ -75,8 +68,6 @@ async function create(req, res, next) {
     next(err);
   }
 }
-
-// adicionar no fim, antes do module.exports
 
 async function remove(req, res, next) {
   try {
@@ -93,7 +84,7 @@ async function remove(req, res, next) {
       throw err;
     }
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'CLIENT_DELETED', entityType: 'client', entityId: Number(id),
       details: { company_name: rows[0].company_name },
     });

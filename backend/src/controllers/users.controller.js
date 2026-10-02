@@ -1,5 +1,6 @@
 const bcrypt = require('bcryptjs');
 const { pool } = require('../config/database');
+const logService      = require('../services/logs.service');
 
 /* =====================================================================
  * users.controller.js — gestão de contas (admin-only).
@@ -9,18 +10,6 @@ class ApiError extends Error {
   constructor(statusCode, message) {
     super(message);
     this.statusCode = statusCode;
-  }
-}
-
-async function logAction(req, { action, entityType = null, entityId = null, jobId = null, details = null }) {
-  try {
-    await pool.query(
-      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, job_id, details, ip_address)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [req.user?.id ?? null, action, entityType, entityId, jobId, details ? JSON.stringify(details) : null, req.ip ?? null]
-    );
-  } catch (err) {
-    console.error('Falha ao registrar log de auditoria:', err);
   }
 }
 
@@ -86,7 +75,7 @@ async function create(req, res, next) {
 
     const [rows] = await pool.query(`SELECT * FROM users WHERE id = ?`, [result.insertId]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'USER_CREATED', entityType: 'user', entityId: result.insertId,
       details: { name, email, role, job_title: job_title || null },
     });
@@ -116,7 +105,7 @@ async function update(req, res, next) {
     const [rows] = await pool.query(`SELECT * FROM users WHERE id = ?`, [id]);
     if (!rows[0]) throw new ApiError(404, 'Usuário não encontrado.');
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'USER_UPDATED', entityType: 'user', entityId: Number(id),
       details: { name, job_title, has_signature, is_active },
     });
@@ -142,7 +131,7 @@ async function updateRole(req, res, next) {
     await pool.query(`UPDATE users SET role = ? WHERE id = ?`, [role, id]);
     const [rows] = await pool.query(`SELECT * FROM users WHERE id = ?`, [id]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'USER_ROLE_CHANGED', entityType: 'user', entityId: Number(id),
       details: { from: before[0].role, to: role },
     });
@@ -164,7 +153,7 @@ async function deactivate(req, res, next) {
     await pool.query(`UPDATE users SET is_active = 0 WHERE id = ?`, [id]);
     await pool.query(`UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL`, [id]);
 
-    await logAction(req, { action: 'USER_DEACTIVATED', entityType: 'user', entityId: Number(id) });
+    await logService.record(req, { action: 'USER_DEACTIVATED', entityType: 'user', entityId: Number(id) });
 
     res.status(204).send();
   } catch (err) {

@@ -1,5 +1,6 @@
 const path = require('path');
 const { pool } = require('../config/database');
+const logService      = require('../services/logs.service');
 const diagnosticsController = require('./diagnostics.controller');
 const { generateResultadoPptx } = require('../services/pptx.service');
 
@@ -33,18 +34,6 @@ const ADM_TAXES = ['PIS_COFINS', 'INSS', 'IRPJ_CSLL', 'IPI'];
 const FTX_TAXES = ['PIS_COFINS', 'INSS', 'IRPJ_CSLL'];
 
 const TEMPLATE_PATH = path.join(__dirname, '..', 'templates', 'SLIDE_PADRAO_V6.pptx');
-
-async function logAction(req, { action, entityType = null, entityId = null, jobId = null, details = null }) {
-  try {
-    await pool.query(
-      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, job_id, details, ip_address)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [req.user?.id ?? null, action, entityType, entityId, jobId, details ? JSON.stringify(details) : null, req.ip ?? null]
-    );
-  } catch (err) {
-    console.error('Falha ao registrar log de auditoria:', err);
-  }
-}
 
 async function assertJobExists(jobId) {
   const [rows] = await pool.query(`SELECT id FROM jobs WHERE id = ?`, [jobId]);
@@ -142,7 +131,7 @@ async function toggleConfirm(req, res, next) {
       throw dbErr;
     }
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'RESULTADO_POINT_CONFIRM_TOGGLED',
       entityType: 'job_point_notes',
       entityId: Number(creditPointDefinitionId),
@@ -193,7 +182,7 @@ async function generatePpt(req, res, next) {
 
     const buffer = await generateResultadoPptx(summary, TEMPLATE_PATH);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'RESULTADO_PPT_GENERATED',
       entityType: 'job',
       entityId: Number(jobId),

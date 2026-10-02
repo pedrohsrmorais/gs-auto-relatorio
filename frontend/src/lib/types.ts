@@ -1,3 +1,4 @@
+// lib/types.ts
 // Tipos espelhando exatamente o que a API retorna (ver schema.sql e os
 // controllers do backend). Mantenha isso em sincronia se o backend mudar.
 
@@ -25,7 +26,7 @@ export type JobStatus =
   | "concluido"
   | "cancelado";
 
-export type CreditCategory = "ADM" | "FINTAX";
+export type CreditCategory = "ADM" | "FTX";
 export type RiskColor = "VERDE" | "AMARELO" | "VERMELHO";
 export type Contribution = "PIS" | "COFINS";
 
@@ -150,9 +151,15 @@ export interface CreditPointAnalysis {
   tax_code?: string;
 }
 
+/**
+ * Resposta paginada padrão da API.
+ * O backend retorna { data, total, page, limit } na raiz — sem wrapper "meta".
+ */
 export interface PaginatedResponse<T> {
   data: T[];
-  meta: { page: number; limit: number; total: number; totalPages: number };
+  total: number;
+  page: number;
+  limit: number;
 }
 
 export type PerdcompStatus = "EM_ANALISE" | "HOMOLOGADA" | "NAO_HOMOLOGADA" | "CANCELADA" | "RETIFICADA";

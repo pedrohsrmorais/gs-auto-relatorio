@@ -19,6 +19,7 @@ const MAIN_NAV: NavItem[] = [
 const ADMIN_NAV: NavItem[] = [
   { label: "Usuários", to: "/admin/usuarios", icon: <Users className="h-4 w-4" /> },
   { label: "Pontos", to: "/admin/pontos", icon: <Tags className="h-4 w-4" /> },
+  { label: "Logs", to: "/admin/logs", icon: <ListChecks className="h-4 w-4" /> },
 ];
 
 export function Avatar({ initials, size = 40 }: { initials: string; size?: number }) {

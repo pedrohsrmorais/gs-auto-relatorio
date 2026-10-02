@@ -196,7 +196,6 @@ export const creditPointDefinitionsApi = {
     tax?: TaxCode;
     nature?: PointNature;
     search?: string;
-    /** Se true, retorna apenas pontos marcados como prioritários/fixos */
     always_show?: boolean;
   } = {}): Promise<PointDefinition[]> {
     const res = await http.get<{ data: PointDefinition[] }>(`/credit-point-definitions?${qs(params)}`);
@@ -214,10 +213,6 @@ export const creditPointDefinitionsApi = {
     const res = await http.patch<{ data: PointDefinition }>(`/credit-point-definitions/${id}`, { tax_code: taxCode });
     return res.data.data;
   },
-  /**
-   * [Admin only] Marca ou desmarca um ponto como prioritário/fixo (always_show).
-   * Pontos prioritários aparecem sempre no diagnóstico, mesmo sem dados importados.
-   */
   async toggleAlwaysShow(id: number, always_show: boolean): Promise<{ id: number; name: string; category: string; always_show: boolean }> {
     const res = await http.patch<{ data: { id: number; name: string; category: string; always_show: boolean } }>(
       `/credit-point-definitions/${id}/always-show`,
@@ -320,7 +315,6 @@ export const jobDiagnosticApi = {
 export type DiagnosticCategory = "ADM" | "FTX";
 export type DiagnosticTax = "PIS_COFINS" | "IPI" | "IRPJ_CSLL" | "INSS";
 
-/** Status de revisão de um ponto de diagnóstico */
 export type ReviewStatus = "PENDING" | "NEEDS_REVIEW" | "APPROVED";
 
 export interface DiagnosticBreakdownItem {
@@ -336,19 +330,12 @@ export interface DiagnosticPointSummary {
   total: number;
   breakdown: DiagnosticBreakdownItem[];
   observations: string | null;
-  /** true quando o ponto foi marcado como "OK" no módulo Resultado */
   confirmed: boolean;
-  /** Estado de revisão do ponto pelo administrador */
   review_status: ReviewStatus;
-  /** Nota deixada pelo admin ao devolver o ponto para revisão */
   review_note: string | null;
-  /** ID do usuário admin que fez a última revisão */
   reviewed_by: number | null;
-  /** Timestamp da última revisão */
   reviewed_at: string | null;
-  /** true quando o ponto é prioritário/fixo (always_show=1) — aparece sempre no diagnóstico */
   is_fixed_point?: boolean;
-  // Campos legados (só vêm quando tax=PIS_COFINS ou IRPJ_CSLL)
   pis_total?: number;
   cofins_total?: number;
   irpj_total?: number;
@@ -364,7 +351,6 @@ export interface DiagnosticMonthlyRow {
   csll_value?: number;
 }
 
-/** Resultado de PATCH .../review */
 export interface ReviewPointResult {
   data: {
     job_id: number;
@@ -377,22 +363,18 @@ export interface ReviewPointResult {
     reviewed_at: string | null;
     updated_at: string;
   };
-  /** Indica se todos os pontos do job estão aprovados após esta ação */
   meta: { all_points_approved: boolean };
 }
 
-/** Progresso de validação do Diagnóstico de um job */
 export interface DiagnosticProgress {
   PENDING: number;
   NEEDS_REVIEW: number;
   APPROVED: number;
   total: number;
   all_approved: boolean;
-  /** 0–100, calculado como APPROVED/total */
   percentage: number;
 }
 
-/** Dados do formulário de Diagnóstico PDF (Q1–Q7 + Obs) */
 export interface DiagnosticPdfFormData {
   q1_paga_darf: string;
   q2_pis_cofins_mes: number;
@@ -431,10 +413,6 @@ export const diagnosticsApi = {
     return res.data.data;
   },
 
-  /**
-   * Analista (ou admin) atualiza as observations de um ponto.
-   * Ao salvar, review_status é resetado para PENDING automaticamente.
-   */
   async updateNote(
     jobId: number,
     creditPointDefinitionId: number,
@@ -447,15 +425,6 @@ export const diagnosticsApi = {
     return res.data.data;
   },
 
-  /**
-   * [Admin only] Aprova ou devolve um ponto para revisão.
-   *
-   * - APPROVED:      limpa a review_note
-   * - NEEDS_REVIEW:  review_note é obrigatória
-   *
-   * A resposta inclui `meta.all_points_approved` para o frontend
-   * saber se o job está pronto para avançar sem precisar de outra query.
-   */
   async reviewPoint(
     jobId: number,
     creditPointDefinitionId: number,
@@ -469,13 +438,6 @@ export const diagnosticsApi = {
     return res.data;
   },
 
-  /**
-   * Retorna o progresso de validação do Diagnóstico para um job.
-   * Contagem de pontos por review_status + percentage (0–100) + all_approved.
-   * Use para:
-   *   - Barra de progresso dentro do job
-   *   - Flag visual na lista de jobs
-   */
   async getProgress(jobId: number): Promise<DiagnosticProgress> {
     const res = await http.get<{ data: DiagnosticProgress }>(
       `/jobs/${jobId}/diagnostics/progress`
@@ -483,9 +445,6 @@ export const diagnosticsApi = {
     return res.data.data;
   },
 
-  /**
-   * Gera o PDF do formulário de Diagnóstico (Q1–Q8) e dispara o download.
-   */
   async generatePdf(
     jobId: number,
     data: DiagnosticPdfFormData,
@@ -520,7 +479,6 @@ export const diagnosticsApi = {
 // ─── resultado ────────────────────────────────────────────────────────────────
 
 export const resultadoApi = {
-  /** Marca/desmarca um ponto como "OK" para entrar na apresentação final. */
   async toggleConfirm(
     jobId: number,
     creditPointDefinitionId: number,
@@ -541,9 +499,6 @@ export const resultadoApi = {
     return res.data.data as any;
   },
 
-  /**
-   * Gera o Parecer Técnico Studio Fiscal em PDF e dispara o download.
-   */
   async generateParecer(
     jobId: number,
     data: { observations: string },
@@ -574,10 +529,6 @@ export const resultadoApi = {
     window.URL.revokeObjectURL(url);
   },
 
-  /**
-   * Gera a apresentação final (.pptx) e dispara o download no navegador.
-   * Trata erros 4xx que chegam como Blob quando responseType=blob.
-   */
   async generatePpt(jobId: number, jobNumber?: string): Promise<void> {
     let res;
     try {
@@ -784,6 +735,117 @@ export const pontosInssApi = {
   },
   async clearAll(jobId: number) {
     const res = await http.delete<{ data: { deleted: number } }>(`/jobs/${jobId}/pontos-inss`);
+    return res.data.data;
+  },
+};
+
+// ─── logs (admin) ─────────────────────────────────────────────────────────────
+
+/** Uma entrada do log de auditoria */
+export interface AuditLog {
+  id: number;
+  user_id: number | null;
+  user_name: string | null;
+  user_email: string | null;
+  action: string;
+  entity_type: string | null;
+  entity_id: number | null;
+  job_id: number | null;
+  job_number: string | null;
+  details: Record<string, unknown> | null;
+  ip_address: string | null;
+  created_at: string;
+}
+
+/**
+ * Métricas de produtividade por job.
+ * Cada campo *_at é um ISO timestamp ou null (etapa ainda não ocorrida).
+ * O frontend calcula as durações com diffMinutes(a, b).
+ *
+ * Fluxo esperado:
+ *   job_created_at → first_import_at → last_import_at
+ *   → first_obs_at → last_obs_at → first_status_change_at
+ *   → all_approved_at → first_output_at
+ */
+export interface ProductivityJob {
+  job_id: number;
+  job_number: string;
+  company_name: string | null;
+  job_created_at: string;
+  /** Analista que criou o job */
+  created_by: string | null;
+  /** Marco 1: primeiro import de qualquer dado */
+  first_import_at: string | null;
+  /** Marco 2: último import antes das observações */
+  last_import_at: string | null;
+  /** Marco 3: primeira observação escrita */
+  first_obs_at: string | null;
+  /** Marco 4: última observação */
+  last_obs_at: string | null;
+  /** Marco 5: primeira mudança de status (proxy para envio p/ revisão) */
+  first_status_change_at: string | null;
+  /** Marco 6: todos os pontos aprovados pelo admin */
+  all_approved_at: string | null;
+  /** Marco 7: primeira emissão de PPT ou Parecer */
+  first_output_at: string | null;
+  /** Quantidade de devoluções (NEEDS_REVIEW) */
+  needs_review_count: number;
+  /** Total de ações de revisão (APPROVED + NEEDS_REVIEW) */
+  total_review_actions: number;
+}
+
+export const logsApi = {
+  /**
+   * Lista todos os logs de auditoria com filtros e paginação.
+   * Apenas admin.
+   */
+  async list(params: {
+    user_id?: number;
+    action?: string;
+    entity_type?: string;
+    job_id?: number;
+    date_from?: string;  // YYYY-MM-DD
+    date_to?: string;    // YYYY-MM-DD
+    search?: string;
+    page?: number;
+    limit?: number;
+  } = {}): Promise<PaginatedResponse<AuditLog>> {
+    const res = await http.get<PaginatedResponse<AuditLog>>(`/logs?${qs(params)}`);
+    return res.data;
+  },
+
+  /**
+   * Retorna os valores distintos de action para popular filtros.
+   */
+  async listActions(): Promise<string[]> {
+    const res = await http.get<{ data: string[] }>("/logs/actions");
+    return res.data.data;
+  },
+
+  /**
+   * Lista logs de um job específico.
+   */
+  async listByJob(
+    jobId: number,
+    params: { page?: number; limit?: number } = {}
+  ): Promise<PaginatedResponse<AuditLog>> {
+    const res = await http.get<PaginatedResponse<AuditLog>>(
+      `/jobs/${jobId}/logs?${qs(params)}`
+    );
+    return res.data;
+  },
+
+  /**
+   * Retorna métricas temporais por job (máx. 200 jobs, do mais recente).
+   * Filtro opcional: date_from / date_to sobre jobs.created_at.
+   */
+  async getProductivity(params: {
+    date_from?: string;
+    date_to?: string;
+  } = {}): Promise<ProductivityJob[]> {
+    const res = await http.get<{ data: ProductivityJob[] }>(
+      `/logs/productivity?${qs(params)}`
+    );
     return res.data.data;
   },
 };

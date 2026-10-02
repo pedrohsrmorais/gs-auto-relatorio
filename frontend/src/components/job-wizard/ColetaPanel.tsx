@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { FileUp, Trash2 } from "lucide-react";
+import { FileUp, PenLine, Trash2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,12 @@ import {
 import { ImportWizard, PontoImportWizard, PontoMultiImportWizard } from "@/components/data-import/ImportWizards";
 import { IpiPontoImportWizard, IpiMultiImportWizard, IrCsllImportWizard, InssImportWizard } from "@/components/data-import/IpiIrCsllWizards";
 import { DataViewerModal, GenericDataViewerModal } from "@/components/data-import/DataViewerModal";
+import {
+  PontoManualEntryModal,
+  IpiManualEntryModal,
+  IrCsllManualEntryModal,
+  InssManualEntryModal,
+} from "@/components/data-import/ManualEntryModal";
 import {
   PERDCOMP_CONFIG,
   DARF_CONFIG,
@@ -224,6 +230,7 @@ function PontoCard({
 }) {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [multiWizardOpen, setMultiWizardOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const queryClient = useQueryClient();
   const queryKey = [`pontos-${category.toLowerCase()}`, jobId];
@@ -254,9 +261,14 @@ function PontoCard({
           </Badge>
         </div>
         <div className="flex items-center gap-2 pt-1 flex-wrap">
-          <Button size="sm" onClick={() => setWizardOpen(true)}><FileUp className="h-4 w-4" /> Importar ponto</Button>
+          <Button size="sm" onClick={() => setWizardOpen(true)}>
+            <FileUp className="h-4 w-4" /> Importar ponto
+          </Button>
           <Button size="sm" variant="outline" onClick={() => setMultiWizardOpen(true)}>
             <FileUp className="h-4 w-4" /> Importar vários pontos
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setManualOpen(true)}>
+            <PenLine className="h-4 w-4" /> Inserir manualmente
           </Button>
           <GenericDataViewerModal title={title} queryKey={queryKey} fetcher={() => api.list(jobId)} columns={PONTO_VIEW_COLUMNS} />
           {data.length > 0 && (
@@ -294,6 +306,17 @@ function PontoCard({
         }}
       />
 
+      <PontoManualEntryModal
+        open={manualOpen}
+        onOpenChange={setManualOpen}
+        title={title}
+        onCommit={async (rows) => {
+          const res = await api.bulkImport(jobId, rows);
+          queryClient.invalidateQueries({ queryKey });
+          return res;
+        }}
+      />
+
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent>
           <DialogHeader><DialogTitle>Desimportar {title}?</DialogTitle></DialogHeader>
@@ -318,6 +341,7 @@ function PontoCard({
 function IpiCard({ jobId }: { jobId: number }) {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [multiWizardOpen, setMultiWizardOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const queryClient = useQueryClient();
   const queryKey = ["pontos-ipi", jobId];
@@ -348,9 +372,14 @@ function IpiCard({ jobId }: { jobId: number }) {
           </Badge>
         </div>
         <div className="flex items-center gap-2 pt-1 flex-wrap">
-          <Button size="sm" onClick={() => setWizardOpen(true)}><FileUp className="h-4 w-4" /> Importar ponto</Button>
+          <Button size="sm" onClick={() => setWizardOpen(true)}>
+            <FileUp className="h-4 w-4" /> Importar ponto
+          </Button>
           <Button size="sm" variant="outline" onClick={() => setMultiWizardOpen(true)}>
             <FileUp className="h-4 w-4" /> Importar vários pontos
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setManualOpen(true)}>
+            <PenLine className="h-4 w-4" /> Inserir manualmente
           </Button>
           <GenericDataViewerModal title="Pontos ADM IPI" queryKey={queryKey} fetcher={() => pontosIpiApi.list(jobId)} columns={IPI_VIEW_COLUMNS} />
           {data.length > 0 && (
@@ -387,6 +416,17 @@ function IpiCard({ jobId }: { jobId: number }) {
         }}
       />
 
+      <IpiManualEntryModal
+        open={manualOpen}
+        onOpenChange={setManualOpen}
+        onCommit={async (pointId, pointName, rows) => {
+          const res = await pontosIpiApi.bulkImport(jobId, pointId, rows);
+          queryClient.invalidateQueries({ queryKey });
+          queryClient.invalidateQueries({ queryKey: ["point-definitions"] });
+          return res;
+        }}
+      />
+
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent>
           <DialogHeader><DialogTitle>Desimportar Pontos ADM IPI?</DialogTitle></DialogHeader>
@@ -410,6 +450,7 @@ function IpiCard({ jobId }: { jobId: number }) {
 
 function IrCsllCard({ jobId }: { jobId: number }) {
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const queryClient = useQueryClient();
   const queryKey = ["pontos-ir-csll", jobId];
@@ -440,7 +481,12 @@ function IrCsllCard({ jobId }: { jobId: number }) {
           </Badge>
         </div>
         <div className="flex items-center gap-2 pt-1 flex-wrap">
-          <Button size="sm" onClick={() => setWizardOpen(true)}><FileUp className="h-4 w-4" /> Importar planilha</Button>
+          <Button size="sm" onClick={() => setWizardOpen(true)}>
+            <FileUp className="h-4 w-4" /> Importar planilha
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setManualOpen(true)}>
+            <PenLine className="h-4 w-4" /> Inserir manualmente
+          </Button>
           <GenericDataViewerModal title="Pontos IR/CSLL" queryKey={queryKey} fetcher={() => pontosIrCsllApi.list(jobId)} columns={IRCSLL_VIEW_COLUMNS} />
           {data.length > 0 && (
             <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive hover:bg-destructive/10"
@@ -458,6 +504,17 @@ function IrCsllCard({ jobId }: { jobId: number }) {
       <IrCsllImportWizard
         open={wizardOpen}
         onOpenChange={setWizardOpen}
+        onCommit={async (rows: IrCsllResolvedRow[]) => {
+          const res = await pontosIrCsllApi.bulkImport(jobId, rows);
+          queryClient.invalidateQueries({ queryKey });
+          queryClient.invalidateQueries({ queryKey: ["point-definitions"] });
+          return res;
+        }}
+      />
+
+      <IrCsllManualEntryModal
+        open={manualOpen}
+        onOpenChange={setManualOpen}
         onCommit={async (rows: IrCsllResolvedRow[]) => {
           const res = await pontosIrCsllApi.bulkImport(jobId, rows);
           queryClient.invalidateQueries({ queryKey });
@@ -489,6 +546,7 @@ function IrCsllCard({ jobId }: { jobId: number }) {
 
 function InssCard({ jobId }: { jobId: number }) {
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const queryClient = useQueryClient();
   const queryKey = ["pontos-inss", jobId];
@@ -519,7 +577,12 @@ function InssCard({ jobId }: { jobId: number }) {
           </Badge>
         </div>
         <div className="flex items-center gap-2 pt-1 flex-wrap">
-          <Button size="sm" onClick={() => setWizardOpen(true)}><FileUp className="h-4 w-4" /> Importar planilha</Button>
+          <Button size="sm" onClick={() => setWizardOpen(true)}>
+            <FileUp className="h-4 w-4" /> Importar planilha
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setManualOpen(true)}>
+            <PenLine className="h-4 w-4" /> Inserir manualmente
+          </Button>
           <GenericDataViewerModal title="Pontos INSS" queryKey={queryKey} fetcher={() => pontosInssApi.list(jobId)} columns={INSS_VIEW_COLUMNS} />
           {data.length > 0 && (
             <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive hover:bg-destructive/10"
@@ -538,6 +601,17 @@ function InssCard({ jobId }: { jobId: number }) {
       <InssImportWizard
         open={wizardOpen}
         onOpenChange={setWizardOpen}
+        onCommit={async (rows: InssResolvedRow[]) => {
+          const res = await pontosInssApi.bulkImport(jobId, rows);
+          queryClient.invalidateQueries({ queryKey });
+          queryClient.invalidateQueries({ queryKey: ["point-definitions"] });
+          return res;
+        }}
+      />
+
+      <InssManualEntryModal
+        open={manualOpen}
+        onOpenChange={setManualOpen}
         onCommit={async (rows: InssResolvedRow[]) => {
           const res = await pontosInssApi.bulkImport(jobId, rows);
           queryClient.invalidateQueries({ queryKey });

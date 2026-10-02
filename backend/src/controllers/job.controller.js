@@ -1,4 +1,5 @@
 const { pool } = require('../config/database');
+const logService      = require('../services/logs.service');
 
 /* =====================================================================
  * job.controller.js — jobs, equipe do job e diagnóstico (1:1).
@@ -17,18 +18,6 @@ const TEAM_ROLES = [
   'responsavel_tecnico', 'gerente_tributario', 'coordenador_tributario', 'analista_fiscal',
   'gerente_previdenciario', 'coordenador_previdenciario', 'analista_previdenciario',
 ];
-
-async function logAction(req, { action, entityType = null, entityId = null, jobId = null, details = null }) {
-  try {
-    await pool.query(
-      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, job_id, details, ip_address)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [req.user?.id ?? null, action, entityType, entityId, jobId, details ? JSON.stringify(details) : null, req.ip ?? null]
-    );
-  } catch (err) {
-    console.error('Falha ao registrar log de auditoria:', err);
-  }
-}
 
 function getPagination(query) {
   const page = Math.max(1, Number(query.page) || 1);
@@ -121,7 +110,7 @@ async function create(req, res, next) {
 
     const [rows] = await pool.query(`SELECT * FROM jobs WHERE id = ?`, [result.insertId]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'JOB_CREATED', entityType: 'job', entityId: result.insertId, jobId: result.insertId,
       details: { job_number, client_id, period_start, period_end },
     });
@@ -145,7 +134,7 @@ async function updateStatus(req, res, next) {
     await pool.query(`UPDATE jobs SET status = ? WHERE id = ?`, [status, id]);
     const [rows] = await pool.query(`SELECT * FROM jobs WHERE id = ?`, [id]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'JOB_STATUS_CHANGED', entityType: 'job', entityId: Number(id), jobId: Number(id),
       details: { from: before[0].status, to: status },
     });
@@ -176,7 +165,7 @@ async function setTeamMember(req, res, next) {
       [jobId, role_in_job, user_id]
     );
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'JOB_TEAM_MEMBER_SET', entityType: 'job_team_member', jobId: Number(jobId),
       details: { role_in_job, user_id },
     });
@@ -192,7 +181,7 @@ async function removeTeamMember(req, res, next) {
     const { jobId, memberId } = req.params;
     await pool.query(`DELETE FROM job_team_members WHERE job_id = ? AND id = ?`, [jobId, memberId]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'JOB_TEAM_MEMBER_REMOVED', entityType: 'job_team_member', entityId: Number(memberId), jobId: Number(jobId),
     });
 
@@ -226,7 +215,7 @@ async function updateDetails(req, res, next) {
     await pool.query(`UPDATE jobs SET ${fields.join(', ')} WHERE id = ?`, params);
     const [rows] = await pool.query(`SELECT * FROM jobs WHERE id = ?`, [id]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'JOB_DETAILS_UPDATED', entityType: 'job', entityId: Number(id), jobId: Number(id),
       details: { before: before[0], after: { tax_regime, segment } },
     });
@@ -249,7 +238,7 @@ async function remove(req, res, next) {
     // Loga ANTES de apagar, com jobId: null — se logasse depois referenciando
     // o job_id, e audit_logs.job_id tiver ON DELETE CASCADE, o próprio
     // registro de auditoria da exclusão sumiria junto com o job.
-    await logAction(req, {
+    await logService.record(req, {
       action: 'JOB_DELETED', entityType: 'job', entityId: Number(id), jobId: null,
       details: { job_number: rows[0].job_number },
     });

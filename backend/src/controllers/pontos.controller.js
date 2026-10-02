@@ -1,4 +1,5 @@
 const { pool } = require('../config/database');
+const logService      = require('../services/logs.service');
 
 /* =====================================================================
  * pontos.controller.js
@@ -42,18 +43,6 @@ const VALID_COLORS  = ['VERDE', 'AMARELO', 'VERMELHO'];
 const VALID_NATURES = ['CREDITO', 'PASSIVO'];
 
 // ─── Auditoria ───────────────────────────────────────────────────────────────
-
-async function logAction(req, { action, entityType = null, entityId = null, jobId = null, details = null }) {
-  try {
-    await pool.query(
-      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, job_id, details, ip_address)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [req.user?.id ?? null, action, entityType, entityId, jobId, details ? JSON.stringify(details) : null, req.ip ?? null]
-    );
-  } catch (err) {
-    console.error('Falha ao registrar log de auditoria:', err);
-  }
-}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -191,7 +180,7 @@ function bulkImportPontos(category, tableName) {
         conn.release();
       }
 
-      await logAction(req, {
+      await logService.record(req, {
         action:     `${category}_PONTO_IMPORTED`,
         entityType: tableName,
         jobId:      Number(jobId),
@@ -224,7 +213,7 @@ function clearPontos(tableName, logPrefix) {
       );
       await pool.query(`DELETE FROM ${tableName} WHERE job_id = ?`, [jobId]);
 
-      await logAction(req, {
+      await logService.record(req, {
         action:     `${logPrefix}_CLEARED`,
         entityType: tableName,
         jobId:      Number(jobId),
@@ -312,7 +301,7 @@ async function bulkImportIpi(req, res, next) {
       conn.release();
     }
 
-    await logAction(req, {
+    await logService.record(req, {
       action:     'IPI_PONTO_IMPORTED',
       entityType: 'pontos_ipi',
       jobId:      Number(jobId),
@@ -400,7 +389,7 @@ async function bulkImportIrCsll(req, res, next) {
       conn.release();
     }
 
-    await logAction(req, {
+    await logService.record(req, {
       action:     'IR_CSLL_PONTO_IMPORTED',
       entityType: 'pontos_ir_csll',
       jobId:      Number(jobId),
@@ -489,7 +478,7 @@ async function bulkImportInss(req, res, next) {
       conn.release();
     }
 
-    await logAction(req, {
+    await logService.record(req, {
       action:     'INSS_PONTO_IMPORTED',
       entityType: 'pontos_inss',
       jobId:      Number(jobId),
@@ -580,7 +569,7 @@ async function updateDefinitionName(req, res, next) {
       [...Object.values(updates), id]
     );
 
-    await logAction(req, {
+    await logService.record(req, {
       action:     'CREDIT_POINT_DEF_UPDATED',
       entityType: 'credit_point_definitions',
       entityId:   Number(id),
@@ -640,7 +629,7 @@ async function toggleAlwaysShow(req, res, next) {
       [always_show ? 1 : 0, id]
     );
 
-    await logAction(req, {
+    await logService.record(req, {
       action:     always_show
         ? 'CREDIT_POINT_DEF_MARKED_PRINCIPAL'
         : 'CREDIT_POINT_DEF_UNMARKED_PRINCIPAL',
@@ -740,7 +729,7 @@ async function bulkImportDefinitions(req, res, next) {
       conn.release();
     }
 
-    await logAction(req, {
+    await logService.record(req, {
       action:     'CREDIT_POINT_DEFS_BULK_IMPORTED',
       entityType: 'credit_point_definitions',
       details: {
@@ -780,7 +769,7 @@ async function quickCreateDefinition(req, res, next) {
       [category, taxRows[0].id, finalNature, externalId, name.trim()]
     );
 
-    await logAction(req, {
+    await logService.record(req, {
       action:     'CREDIT_POINT_DEF_QUICK_CREATED',
       entityType: 'credit_point_definitions',
       entityId:   result.insertId,
@@ -816,7 +805,7 @@ async function removeDefinition(req, res, next) {
     await pool.query(`DELETE FROM job_point_notes         WHERE credit_point_definition_id = ?`, [id]);
     await pool.query(`DELETE FROM credit_point_definitions WHERE id = ?`, [id]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action:     'CREDIT_POINT_DEF_DELETED',
       entityType: 'credit_point_definitions',
       entityId:   Number(id),
@@ -866,7 +855,7 @@ async function resetAllDefinitions(req, res, next) {
       credit_point_definitions: c6,
     };
 
-    await logAction(req, {
+    await logService.record(req, {
       action:     'CREDIT_POINT_DEFINITIONS_RESET_ALL',
       entityType: 'credit_point_definitions',
       details:    deleted,

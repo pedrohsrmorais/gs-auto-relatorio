@@ -63,17 +63,14 @@ router.get('/jobs/:jobId/diagnostics/points/:creditPointDefinitionId/monthly',
   diagnosticsController.getMonthly);
 
 // Progresso de validação do job — qualquer autenticado
-// Usado pela lista de jobs (flag visual) e barra de progresso
 router.get('/jobs/:jobId/diagnostics/progress',
   diagnosticsController.getProgress);
 
 // Analista (ou admin) escreve/edita as observations do ponto
-// Ao editar, review_status volta para PENDING automaticamente
 router.put('/jobs/:jobId/diagnostics/points/:creditPointDefinitionId',
   diagnosticsController.updateNote);
 
-// Admin aprova ou devolve um ponto com nota de revisão
-// Body: { review_status: 'APPROVED' | 'NEEDS_REVIEW', review_note?: string }
+// Admin aprova ou devolve um ponto
 router.patch('/jobs/:jobId/diagnostics/points/:creditPointDefinitionId/review',
   authorize('admin'),
   diagnosticsController.reviewPoint);
@@ -91,12 +88,10 @@ router.post(`/jobs/:jobId/resultado/gerar-ppt`,
   resultadoController.generatePpt);
 
 // Gera o Parecer Técnico Studio Fiscal em PDF
-// Body: { observations: string }
 router.post('/jobs/:jobId/resultado/gerar-parecer',
   diagnosticsController.generateParecer);
 
-// Gera o PDF do formulário de Diagnóstico (Q1–Q8)
-// Body: DiagnosticPdfFormData
+// Gera o PDF do formulário de Diagnóstico (Q1–Q7 + Obs)
 router.post('/jobs/:jobId/diagnostics/gerar-pdf',
   diagnosticsController.generateDiagnosticoPdf);
 
@@ -175,6 +170,8 @@ router.patch('/credit-point-definitions/:id/always-show',
 // ─── Logs (admin) ─────────────────────────────────────────────────────────────
 
 router.get('/logs',              authorize('admin'), logsController.list);
+router.get('/logs/actions',      authorize('admin'), logsController.listActions);
+router.get('/logs/productivity', authorize('admin'), logsController.getProductivity);
 router.get('/jobs/:jobId/logs',  authorize('admin'), logsController.listByJob);
 
 module.exports = router;

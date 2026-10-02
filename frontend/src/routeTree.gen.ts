@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ClientesRouteImport } from './routes/clientes'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as AdminLogsRouteImport } from './routes/admin/logs'
 import { Route as AdminPontosRouteImport } from './routes/admin/pontos'
 import { Route as AdminUsuariosRouteImport } from './routes/admin/usuarios'
 import { Route as JobsIndexRouteImport } from './routes/jobs/index'
@@ -30,6 +31,11 @@ const ClientesRoute = ClientesRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminLogsRoute = AdminLogsRouteImport.update({
+  id: '/admin/logs',
+  path: '/admin/logs',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdminPontosRoute = AdminPontosRouteImport.update({
@@ -57,6 +63,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/clientes': typeof ClientesRoute
   '/login': typeof LoginRoute
+  '/admin/logs': typeof AdminLogsRoute
   '/admin/pontos': typeof AdminPontosRoute
   '/admin/usuarios': typeof AdminUsuariosRoute
   '/jobs/$jobId': typeof JobsJobIdRoute
@@ -66,6 +73,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/clientes': typeof ClientesRoute
   '/login': typeof LoginRoute
+  '/admin/logs': typeof AdminLogsRoute
   '/admin/pontos': typeof AdminPontosRoute
   '/admin/usuarios': typeof AdminUsuariosRoute
   '/jobs/$jobId': typeof JobsJobIdRoute
@@ -76,6 +84,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/clientes': typeof ClientesRoute
   '/login': typeof LoginRoute
+  '/admin/logs': typeof AdminLogsRoute
   '/admin/pontos': typeof AdminPontosRoute
   '/admin/usuarios': typeof AdminUsuariosRoute
   '/jobs/$jobId': typeof JobsJobIdRoute
@@ -87,6 +96,7 @@ export interface FileRouteTypes {
     | '/'
     | '/clientes'
     | '/login'
+    | '/admin/logs'
     | '/admin/pontos'
     | '/admin/usuarios'
     | '/jobs/$jobId'
@@ -96,6 +106,7 @@ export interface FileRouteTypes {
     | '/'
     | '/clientes'
     | '/login'
+    | '/admin/logs'
     | '/admin/pontos'
     | '/admin/usuarios'
     | '/jobs/$jobId'
@@ -105,6 +116,7 @@ export interface FileRouteTypes {
     | '/'
     | '/clientes'
     | '/login'
+    | '/admin/logs'
     | '/admin/pontos'
     | '/admin/usuarios'
     | '/jobs/$jobId'
@@ -115,6 +127,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ClientesRoute: typeof ClientesRoute
   LoginRoute: typeof LoginRoute
+  AdminLogsRoute: typeof AdminLogsRoute
   AdminPontosRoute: typeof AdminPontosRoute
   AdminUsuariosRoute: typeof AdminUsuariosRoute
   JobsJobIdRoute: typeof JobsJobIdRoute
@@ -142,6 +155,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin/logs': {
+      id: '/admin/logs'
+      path: '/admin/logs'
+      fullPath: '/admin/logs'
+      preLoaderRoute: typeof AdminLogsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/admin/pontos': {
@@ -179,6 +199,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ClientesRoute: ClientesRoute,
   LoginRoute: LoginRoute,
+  AdminLogsRoute: AdminLogsRoute,
   AdminPontosRoute: AdminPontosRoute,
   AdminUsuariosRoute: AdminUsuariosRoute,
   JobsJobIdRoute: JobsJobIdRoute,

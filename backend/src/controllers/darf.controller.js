@@ -1,4 +1,5 @@
 const { pool } = require('../config/database');
+const logService      = require('../services/logs.service');
 
 /* =====================================================================
  * darf.controller.js — DARF + SPED M400 + SPED M610.
@@ -9,18 +10,6 @@ class ApiError extends Error {
   constructor(statusCode, message) {
     super(message);
     this.statusCode = statusCode;
-  }
-}
-
-async function logAction(req, { action, entityType = null, entityId = null, jobId = null, details = null }) {
-  try {
-    await pool.query(
-      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, job_id, details, ip_address)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [req.user?.id ?? null, action, entityType, entityId, jobId, details ? JSON.stringify(details) : null, req.ip ?? null]
-    );
-  } catch (err) {
-    console.error('Falha ao registrar log de auditoria:', err);
   }
 }
 
@@ -84,7 +73,7 @@ async function bulkImportDarf(req, res, next) {
       conn.release();
     }
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'DARF_IMPORTED', entityType: 'job_darf_entry', jobId: Number(jobId),
       details: { inserted, total_rows: rows.length },
     });
@@ -100,7 +89,7 @@ async function removeDarf(req, res, next) {
     const { jobId, id } = req.params;
     await pool.query(`DELETE FROM job_darf_entries WHERE job_id = ? AND id = ?`, [jobId, id]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'DARF_DELETED', entityType: 'job_darf_entry', entityId: Number(id), jobId: Number(jobId),
     });
 
@@ -118,7 +107,7 @@ async function clearDarf(req, res, next) {
     const [[{ count }]] = await pool.query(`SELECT COUNT(*) AS count FROM job_darf_entries WHERE job_id = ?`, [jobId]);
     await pool.query(`DELETE FROM job_darf_entries WHERE job_id = ?`, [jobId]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'DARF_CLEARED', entityType: 'job_darf_entry', jobId: Number(jobId),
       details: { deleted: count },
     });
@@ -178,7 +167,7 @@ async function bulkImportM400(req, res, next) {
       conn.release();
     }
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'SPED_M400_IMPORTED', entityType: 'job_sped_m400_entry', jobId: Number(jobId),
       details: { inserted, total_rows: rows.length },
     });
@@ -194,7 +183,7 @@ async function removeM400(req, res, next) {
     const { jobId, id } = req.params;
     await pool.query(`DELETE FROM job_sped_m400_entries WHERE job_id = ? AND id = ?`, [jobId, id]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'SPED_M400_DELETED', entityType: 'job_sped_m400_entry', entityId: Number(id), jobId: Number(jobId),
     });
 
@@ -212,7 +201,7 @@ async function clearM400(req, res, next) {
     const [[{ count }]] = await pool.query(`SELECT COUNT(*) AS count FROM job_sped_m400_entries WHERE job_id = ?`, [jobId]);
     await pool.query(`DELETE FROM job_sped_m400_entries WHERE job_id = ?`, [jobId]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'SPED_M400_CLEARED', entityType: 'job_sped_m400_entry', jobId: Number(jobId),
       details: { deleted: count },
     });
@@ -279,7 +268,7 @@ async function bulkImportM610(req, res, next) {
       conn.release();
     }
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'SPED_M610_IMPORTED', entityType: 'job_sped_m610_entry', jobId: Number(jobId),
       details: { inserted, total_rows: rows.length },
     });
@@ -295,7 +284,7 @@ async function removeM610(req, res, next) {
     const { jobId, id } = req.params;
     await pool.query(`DELETE FROM job_sped_m610_entries WHERE job_id = ? AND id = ?`, [jobId, id]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'SPED_M610_DELETED', entityType: 'job_sped_m610_entry', entityId: Number(id), jobId: Number(jobId),
     });
 
@@ -313,7 +302,7 @@ async function clearM610(req, res, next) {
     const [[{ count }]] = await pool.query(`SELECT COUNT(*) AS count FROM job_sped_m610_entries WHERE job_id = ?`, [jobId]);
     await pool.query(`DELETE FROM job_sped_m610_entries WHERE job_id = ?`, [jobId]);
 
-    await logAction(req, {
+    await logService.record(req, {
       action: 'SPED_M610_CLEARED', entityType: 'job_sped_m610_entry', jobId: Number(jobId),
       details: { deleted: count },
     });

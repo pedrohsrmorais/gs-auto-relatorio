@@ -1,4 +1,5 @@
 const { pool } = require('../config/database');
+const logService      = require('../services/logs.service');
 const PDFDocument = require('pdfkit');   // npm install pdfkit
 const AdmZip      = require('adm-zip'); // npm install adm-zip
 const fs          = require('fs');
@@ -73,18 +74,6 @@ function resolveTax(taxQuery) {
 async function assertJobExists(jobId) {
   const [rows] = await pool.query(`SELECT id FROM jobs WHERE id = ?`, [jobId]);
   if (!rows[0]) throw new ApiError(404, 'Job não encontrado.');
-}
-
-async function logAction(req, { action, entityType = null, entityId = null, jobId = null, details = null }) {
-  try {
-    await pool.query(
-      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, job_id, details, ip_address)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [req.user?.id ?? null, action, entityType, entityId, jobId, details ? JSON.stringify(details) : null, req.ip ?? null]
-    );
-  } catch (err) {
-    console.error('Falha ao registrar log de auditoria:', err);
-  }
 }
 
 // ─── Helpers compartilhados ───────────────────────────────────────────────────
@@ -586,7 +575,7 @@ async function updateNote(req, res, next) {
       [jobId, creditPointDefinitionId]
     );
 
-    await logAction(req, {
+    await logService.record(req, {
       action:     'JOB_POINT_NOTE_UPDATED',
       entityType: 'job_point_notes',
       entityId:   Number(creditPointDefinitionId),
@@ -656,7 +645,7 @@ async function reviewPoint(req, res, next) {
       [jobId, creditPointDefinitionId]
     );
 
-    await logAction(req, {
+    await logService.record(req, {
       action:     review_status === 'APPROVED' ? 'JOB_POINT_APPROVED' : 'JOB_POINT_NEEDS_REVIEW',
       entityType: 'job_point_notes',
       entityId:   Number(creditPointDefinitionId),
@@ -665,6 +654,19 @@ async function reviewPoint(req, res, next) {
     });
 
     const allApproved = await checkAllPointsApproved(jobId);
+
+    // Marco de produtividade: registra quando TODOS os pontos ficam aprovados.
+    // Acontece apenas quando esta aprovação específica é a que fecha o conjunto.
+    if (review_status === 'APPROVED' && allApproved) {
+      await logService.record(req, {
+        action:     'ALL_POINTS_APPROVED',
+        entityType: 'job',
+        entityId:   Number(jobId),
+        jobId:      Number(jobId),
+        details:    { last_point_id: Number(creditPointDefinitionId) },
+      });
+    }
+
     res.json({ data: rows[0], meta: { all_points_approved: allApproved } });
   } catch (err) {
     next(err);
@@ -725,7 +727,7 @@ async function generateParecer(req, res, next) {
     const obsText = String(observations).trim();
 
     // ── Lê o template .docx ──────────────────────────────────────────
-    const templatePath = path.join(__dirname, '../../backend/templates/parecer_template.docx');
+    const templatePath = path.join(__dirname, '../templates/parecer_template.docx');
     if (!fs.existsSync(templatePath)) {
       throw new ApiError(500, 'Template do parecer não encontrado. Coloque o arquivo em backend/templates/parecer_template.docx');
     }
@@ -796,7 +798,7 @@ async function generateParecer(req, res, next) {
     });
     res.send(docxBuffer);
 
-    await logAction(req, {
+    await logService.record(req, {
       action:     'PARECER_GERADO',
       entityType: 'jobs',
       entityId:   Number(jobId),
@@ -1314,7 +1316,7 @@ async function generateDiagnosticoPdf(req, res, next) {
     });
     res.send(pdfBuffer);
 
-    await logAction(req, {
+    await logService.record(req, {
       action:     'DIAGNOSTICO_PDF_GERADO',
       entityType: 'jobs',
       entityId:   Number(jobId),
