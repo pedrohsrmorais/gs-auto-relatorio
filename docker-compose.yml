@@ -1,0 +1,32 @@
+services:
+
+  db:
+    image: mysql:8
+    container_name: studio-fiscal-db
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: studio_db
+      MYSQL_DATABASE: studio_fiscal
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-pstudio_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    container_name: studio-fiscal-api
+    restart: always
+    ports:
+      - "3028:3028"
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db_data:
